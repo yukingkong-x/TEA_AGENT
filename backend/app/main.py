@@ -9,11 +9,12 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from loguru import logger
 
-from . import bootstrap
+from . import bootstrap, seams
 from .api import api_router
 from .api.ws import router as ws_router
 from .config import get_settings
@@ -42,6 +43,7 @@ async def lifespan(app: FastAPI):
         logger.warning("未配置 LLM API Key —— 平台将进入规则降级模式（PRD 20.2）")
 
     bootstrap.start_all(asyncio.get_running_loop())
+    seams.log_status()
     logger.info("后端就绪：http://127.0.0.1:{}/docs", settings.backend_port)
     logger.info("=" * 64)
 
@@ -72,6 +74,16 @@ app.add_middleware(
 
 app.include_router(api_router)
 app.include_router(ws_router)  # /ws/dashboard 不带 /api 前缀
+
+
+@app.exception_handler(seams.SeamNotReady)
+async def seam_not_ready_handler(request: Request, exc: seams.SeamNotReady) -> JSONResponse:
+    """跨地盘模块没接上 → 503 + 人话，前端据此显示「模块未就绪」而不是白屏 500。"""
+    logger.warning("接缝未就绪 {} {} → {}", request.method, request.url.path, exc.detail)
+    return JSONResponse(
+        status_code=503,
+        content={"detail": exc.detail, "seam": exc.seam, "code": "SEAM_NOT_READY"},
+    )
 
 
 @app.get("/", include_in_schema=False)

@@ -8,20 +8,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .. import seams
 from ..db import get_db
 from ..models.reports import Report
-from ._common import delegate, ensure_found, page_payload
+from ._common import ensure_found, page_payload
 
 router = APIRouter(prefix="/reports", tags=["reports"])
-
-GENERATOR_SEAMS = (
-    ("app.verification.report", "generate_report"),
-    ("app.reports.generator", "generate_report"),
-)
 
 
 def to_summary(r: Report) -> dict[str, Any]:
@@ -66,14 +62,6 @@ def get_report(report_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
 
 @router.post("/generate", summary="为某次执行生成报告（调队长生成器）")
 def generate_report(run_id: int = Query(..., description="执行实例 id"), db: Session = Depends(get_db)) -> dict[str, Any]:
-    last_error: str | None = None
-    for dotted, attr in GENERATOR_SEAMS:
-        try:
-            fn = delegate(dotted, attr, owner="队长")
-        except HTTPException as exc:
-            last_error = str(exc.detail)
-            continue
-        result = fn(run_id)
-        report_id = result.get("report_id") if isinstance(result, dict) else result
-        return {"run_id": run_id, "report_id": report_id}
-    raise HTTPException(status_code=503, detail=f"报告生成器尚未就绪：{last_error}")
+    result = seams.generate_report(run_id)
+    report_id = result.get("report_id") if isinstance(result, dict) else result
+    return {"run_id": run_id, "report_id": report_id}

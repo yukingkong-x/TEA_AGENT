@@ -5,7 +5,7 @@ from datetime import datetime
 
 from fastapi import APIRouter
 
-from .. import db
+from .. import db, seams
 from ..config import get_settings
 from ..core import mqtt_client
 from ..core.redis_client import ping as redis_ping
@@ -22,6 +22,7 @@ def health() -> dict:
     db_ok = db.ping()
     redis_ok = redis_ping()
     mqtt_ok = mqtt_client.is_connected()
+    seam_states = seams.status()
     return {
         "status": "ok" if (db_ok and redis_ok) else "degraded",
         "db": "up" if db_ok else "down",
@@ -31,6 +32,8 @@ def health() -> dict:
         "simulator": simulator.running,
         "ws_clients": manager.client_count,
         "llm_ready": settings.llm_ready,
+        # 队长地盘的就绪情况：ready / 未就绪原因（相关接口返回 503）
+        "seams": {k: ("ready" if v == "ready" else "not_ready") for k, v in seam_states.items()},
         "version": settings.app_version,
         "ts": datetime.now().isoformat(timespec="seconds"),
     }

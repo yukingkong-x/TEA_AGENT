@@ -16,10 +16,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .. import seams
 from ..config import get_settings
 from ..db import get_db, session_scope
 from ..models.knowledge_docs import KnowledgeDoc
-from ._common import delegate, ensure_found
+from ._common import ensure_found
 
 router = APIRouter(prefix="/knowledge", tags=["knowledge"])
 settings = get_settings()
@@ -46,8 +47,7 @@ def _doc_dict(doc: KnowledgeDoc) -> dict[str, Any]:
 def _ingest_worker(doc_id: int, path: str) -> None:
     """后台线程跑切片入库，避免阻塞上传请求。"""
     try:
-        ingest = delegate("app.knowledge.loader", "ingest", owner="队长")
-        result = ingest(path=path, doc_id=doc_id)
+        result = seams.ingest(path=path, doc_id=doc_id)
         chunk_count = int(result.get("chunk_count", 0)) if isinstance(result, dict) else 0
         with session_scope() as db:
             doc = db.get(KnowledgeDoc, doc_id)
@@ -73,7 +73,7 @@ def upload(
         raise HTTPException(status_code=400, detail=f"只支持 {sorted(ALLOWED_SUFFIX)}，收到 {suffix or '未知'}")
 
     # 没有 loader 就直接 503，避免把文档写进库却永远 processing
-    delegate("app.knowledge.loader", "ingest", owner="队长")
+    seams.ensure("ingest")
 
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
     stored = settings.upload_dir / f"{uuid.uuid4().hex}{suffix}"
@@ -96,11 +96,7 @@ def upload(
 
 @router.post("/search", summary="检索测试（返回带引用的片段）")
 def search(body: SearchIn) -> dict[str, Any]:
-    search_fn = delegate("app.knowledge.retriever", "search", owner="队长")
-    try:
-        hits = search_fn(body.question, body.top_k)
-    except TypeError:
-        hits = search_fn(question=body.question, top_k=body.top_k)
+    hits = seams.search(question=body.question, top_k=body.top_k)
     return {"question": body.question, "top_k": body.top_k, "hits": hits}
 
 

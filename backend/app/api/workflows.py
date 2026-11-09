@@ -12,13 +12,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .. import seams
 from ..db import get_db
 from ..models.agent_messages import AgentMessage
 from ..models.agents import Agent
 from ..models.tasks import Task
 from ..models.workflow_runs import WorkflowRun
 from ..models.workflows import Workflow
-from ._common import delegate, ensure_found, page_payload
+from ._common import ensure_found, page_payload
 from ._dag import validate_dag
 from .tasks import to_dict as task_to_dict
 
@@ -44,12 +45,7 @@ def _known_agents(db: Session) -> set[str]:
 
 def _validate_or_400(db: Session, dag: dict[str, Any]) -> None:
     """优先用队长引擎的校验（将来加了业务规则就以他为准），没有就用本地闸门。"""
-    try:
-        engine = delegate("app.workflow.engine")
-        validator = getattr(engine, "validate_dag", None) or getattr(engine, "validate", None)
-        errors = validator(dag) if validator else None
-    except HTTPException:
-        errors = None
+    errors = seams.validate_dag(dag)  # 对面没提供时返回 None
     if errors is None:
         errors = validate_dag(dag, _known_agents(db))
     if errors:
@@ -139,11 +135,8 @@ def run_workflow(wf_id: int, trigger: str = Query("manual"), db: Session = Depen
     if not row.enabled:
         raise HTTPException(status_code=400, detail="该工作流已停用")
 
-    start_run = delegate("app.workflow.service", "start_run", owner="队长")
-    try:
-        result = start_run(wf_id=wf_id, trigger=trigger)
-    except TypeError:
-        result = start_run(wf_id, trigger)
+    start_run = seams.start_run
+    result = start_run(wf_id, trigger)
     run_id = result.get("run_id") if isinstance(result, dict) else result
     return {"run_id": run_id, "wf_id": wf_id, "trigger": trigger, "raw": result}
 
