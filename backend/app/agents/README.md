@@ -43,11 +43,39 @@ LLM 接入统一走 openai SDK 兼容模式：超时 60s、失败切备用、连
 - **给 C**：`cmd` 指令语义（5.3：pump / relay_off / read_now / calibrate_dry / calibrate_wet）
 - 工具池通过 **MCP Server（SSE `/mcp`）** 对外暴露——赛题关键词，加分项，别忘了
 
-## 今天第一步（D7 就干这个）
+## D7 已完成（11.9，F-001/002/003 落地）
 
-1. `core/llm.py`：openai SDK 接 GLM-4-Flash，先跑通一次对话
-2. `agents/prompts.py`：把 PRD 8.2 的 7 段提示词抄进来，做首启写入 agents 表
-3. `agents/base.py`（AgentRunner）：构造消息 → 调 LLM → 解析工具调用 → 执行 → 回填；先让 scout（巡园管家）单 Agent 跑通"汇总当前数据"问答
+- `core/llm.py`：主备切换 / 60s 超时 / 连续 2 次失败规则降级 / 探针自动恢复
+- `agents/prompts.py`：PRD 8.2 的 7 段提示词逐字入库（`to_db_rows()` 首启写 agents 表）
+- `agents/base.py`：AgentRunner（消息构造 → LLM → 工具循环 → 权限拦截留痕）
+- `agents/tools.py`：11 个工具 + 权限白名单 + 达成率公式（PRD 11.1）
+- `agents/mcp_server.py`：MCP Server（SSE `/mcp`，JSON-RPC 2024-11-05）
+- `agents/fallback.py`：PRD 20.2 降级模板；`runner_{key}.py` × 7：薄工厂
+- 64 个测试全绿（`tests/` 下 7 个文件）
+
+## 本地跑测试
+
+```powershell
+# 在仓库根目录执行；venv 在 backend/.venv
+$env:PYTHONPATH = "$PWD\backend"
+& backend\.venv\Scripts\python.exe -m pytest "$PWD\backend\app\agents\tests" -v -o asyncio_default_fixture_loop_scope=function
+```
+
+（`-o` 参数是 pytest-asyncio 警告的临时解法，等 B 建好 `backend/pytest.ini` 后去掉。）
+
+## 工具接线状态（8 个工具等真数据）
+
+已通：`calc_achievement`、`wait_penetration`、`get_weather`（临时档案数据，联调时换真接口）
+待接（调用会抛 `ToolNotReady`，**不造假数据**）：
+
+| 工具 | 等谁 |
+| ---- | ---- |
+| get_soil_status / get_env_status | B:models/ 数据源适配层(11.12 前) |
+| create_task / send_device_cmd | F-014 调度器(11.11-12);send_device_cmd 仅 executor 可调 |
+| verify_result | F-016 验证引擎(11.13) |
+| write_report | F-022 报告(11.13) |
+| query_knowledge | F-020 知识库(11.13) |
+| raise_alert | B:alerts 告警通道 |
 
 ## Git 速记
 
