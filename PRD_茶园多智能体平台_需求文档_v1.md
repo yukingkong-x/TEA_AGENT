@@ -1,7 +1,4 @@
----
-AIGC: {"Label":"1","ContentProducer":"001191110108MA01KP2T5U00000","ProduceID":"63622f1e-090c-414e-842f-511a119b9a9f","ReservedCode1":"","ContentPropagator":"001191110108MA01KP2T5U00000","PropagateID":"63622f1e-090c-414e-842f-511a119b9a9f","ReservedCode2":""}
----
-# 「知秋」茶园多智能体编排平台 · 产品需求文档（PRD）
+# 茶园多智能体编排平台 · 产品需求文档（PRD）
 
 > **版本**：v1.1 ｜ **日期**：2026-11-09 ｜ **状态**：施工级（可直接开发）
 >

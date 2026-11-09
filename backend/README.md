@@ -1,6 +1,3 @@
----
-AIGC: {"Label":"1","ContentProducer":"001191110108MA01KP2T5U00000","ProduceID":"b247f35d-ad11-4bd2-828f-6f018f43080b","ReservedCode1":"","ContentPropagator":"001191110108MA01KP2T5U00000","PropagateID":"b247f35d-ad11-4bd2-828f-6f018f43080b","ReservedCode2":""}
----
 # 后端模块 · 开工手册（队友 B）
 
 > 一句话：让平台"活着"——服务起得来、数据进得库、接口都通、一键能启动。你是全队的数据中枢。

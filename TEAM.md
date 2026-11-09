@@ -1,6 +1,3 @@
----
-AIGC: {"Label":"1","ContentProducer":"001191110108MA01KP2T5U00000","ProduceID":"968a3465-6f74-4489-913f-b8b7e9c3b83c","ReservedCode1":"","ContentPropagator":"001191110108MA01KP2T5U00000","PropagateID":"968a3465-6f74-4489-913f-b8b7e9c3b83c","ReservedCode2":""}
----
 # TEAM.md — 团队协作与分工手册
 
 > **项目**：「知秋」茶园多智能体编排平台（正式名未定，代号「知秋」，定名后全局替换）

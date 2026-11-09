@@ -1,7 +1,3 @@
----
-AIGC: {"Label":"1","ContentProducer":"001191110108MA01KP2T5U00000","ProduceID":"1e404c9c-0682-4dea-99a0-99421cc08c0c","ReservedCode1":"","ContentPropagator":"001191110108MA01KP2T5U00000","PropagateID":"1e404c9c-0682-4dea-99a0-99421cc08c0c","ReservedCode2":""}
----
-
 # meeting —— 站会记录
 
 每晚 21:00 十分钟站会，记录放这里，文件名用日期：`2026-11-09.md`。

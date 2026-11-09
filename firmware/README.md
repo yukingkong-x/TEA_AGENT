@@ -1,6 +1,3 @@
----
-AIGC: {"Label":"1","ContentProducer":"001191110108MA01KP2T5U00000","ProduceID":"1cbdb9b7-2805-47b0-9c6a-9922061c5f0a","ReservedCode1":"","ContentPropagator":"001191110108MA01KP2T5U00000","PropagateID":"1cbdb9b7-2805-47b0-9c6a-9922061c5f0a","ReservedCode2":""}
----
 # 硬件模块 · 开工手册（队友 C）
 
 > 一句话：让评委看到"真设备、真数据、真浇水"——三块板子从传感器到水泵跑通物理闭环。

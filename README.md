@@ -1,10 +1,6 @@
 # TEA_AGENT
 
-
----
-AIGC: {"Label":"1","ContentProducer":"001191110108MA01KP2T5U00000","ProduceID":"fe957bdf-5e9f-48cc-9f5a-4a2be5cc71c1","ReservedCode1":"","ContentPropagator":"001191110108MA01KP2T5U00000","PropagateID":"fe957bdf-5e9f-48cc-9f5a-4a2be5cc71c1","ReservedCode2":""}
----
-# 「知秋」茶园多智能体编排平台
+# 茶园多智能体编排平台
 
 > **一句话**：7 个 AI 智能体协作管茶园——决策 → 真实浇水 → 传感器复测 → 达成率验证 → 自动修正，用真实物理闭环证明 Agent 的决策在现实世界有效。
 >
