@@ -1,6 +1,3 @@
----
-AIGC: {"Label":"1","ContentProducer":"001191110108MA01KP2T5U00000","ProduceID":"96d9ab1f-6eea-44e2-85e7-9af4c475c265","ReservedCode1":"","ContentPropagator":"001191110108MA01KP2T5U00000","PropagateID":"96d9ab1f-6eea-44e2-85e7-9af4c475c265","ReservedCode2":""}
----
 # contracts —— 契约变更记录
 
 契约本体在 PRD 第 5 章（MQTT 报文）和第 7 章（REST API / 工具池），这里是变更流水账。

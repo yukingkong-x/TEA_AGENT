@@ -1,6 +1,3 @@
----
-AIGC: {"Label":"1","ContentProducer":"001191110108MA01KP2T5U00000","ProduceID":"3239b0d3-7d33-461f-9276-ab08271f46bf","ReservedCode1":"","ContentPropagator":"001191110108MA01KP2T5U00000","PropagateID":"3239b0d3-7d33-461f-9276-ab08271f46bf","ReservedCode2":""}
----
 # 智能体模块 · 开工手册（队长）
 
 > 一句话：平台的"智能"全在这里——7 个 Agent 协作、DAG 工作流编排、动态调度、Self-Loop 验证闭环。**这是赛题评分的核心。**

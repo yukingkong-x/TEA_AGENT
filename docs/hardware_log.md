@@ -1,6 +1,3 @@
----
-AIGC: {"Label":"1","ContentProducer":"001191110108MA01KP2T5U00000","ProduceID":"af7571e2-2220-407a-8ba3-955dbba35aff","ReservedCode1":"","ContentPropagator":"001191110108MA01KP2T5U00000","PropagateID":"af7571e2-2220-407a-8ba3-955dbba35aff","ReservedCode2":""}
----
 # 硬件实测日志（队友 C 每天记）
 
 方案书里"真实数据"的来源，也是答辩时证明"我们真的跑过硬件"的证据。

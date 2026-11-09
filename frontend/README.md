@@ -1,6 +1,3 @@
----
-AIGC: {"Label":"1","ContentProducer":"001191110108MA01KP2T5U00000","ProduceID":"46ac5142-6141-4382-b4ca-4ead9eede163","ReservedCode1":"","ContentPropagator":"001191110108MA01KP2T5U00000","PropagateID":"46ac5142-6141-4382-b4ca-4ead9eede163","ReservedCode2":""}
----
 # 前端模块 · 开工手册（队友 A）
 
 > 一句话：把整个平台"演"给评委看——六个页面，让 7 个 Agent 的编排过程**看得见、看得懂**。
