@@ -229,3 +229,6 @@ backend/logs/
 backend/uploads/
 logs/
 *.log
+
+# AI 助手的工作区状态（各人本机，不入库）
+.workbuddy/
