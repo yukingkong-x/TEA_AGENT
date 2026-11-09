@@ -223,3 +223,10 @@ __marimo__/
 node_modules/
 __pycache__/
 .pio/
+
+# 项目运行时产物（PRD 18:这些目录/文件永远不进仓库）
+logs/
+uploads/
+chroma_data/
+mysql_data/
+*.key
