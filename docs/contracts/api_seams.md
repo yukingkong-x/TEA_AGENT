@@ -22,21 +22,44 @@
 | 任务号生成 | `app.core.ids` | `new_task_no()` / `new_msg_id()` | Redis INCR，按天归零 |
 | API Key 加解密 | `app.core.crypto` | `encrypt/decrypt/mask` | settings 表里的 `llm_api_key` 已加密 |
 
-### 基座需要队长提供的（**签名请按这个来，否则我这边只能 503**）
+### 基座需要队长提供的（**只认 `app/seams.py` 这一个文件**）
 
-`app/api/_common.py::delegate()` 按下面的路径去找，找不到就返回
-`503 {"detail": "依赖模块 xxx 尚未就绪（队长 地盘）"}`，前端据此显示「模块未就绪」。
+基座不再直接 import 队长的模块。所有跨地盘调用都过 `backend/app/seams.py`
+（门面/适配层）。它目前是「自动找 + 找不到就 503」：
 
-| 能力 | 约定位置 | 约定签名 | 谁在用 |
+```
+HTTP 503
+{"detail": "触发工作流尚未就绪（队长地盘）：app.workflow.service 导入失败（ModuleNotFoundError...）
+           ｜约定 start_run(wf_id: int, trigger: str) -> {run_id}｜调用方 POST /api/workflows/{id}/run",
+ "seam": "start_run", "code": "SEAM_NOT_READY"}
+```
+
+**队长侧只有两种接法，任选一种，基座 api/*.py 一行都不用改：**
+
+- **接法 1（零改动）**：模块路径 + 函数名跟下表一致，落地即生效。
+- **接法 2（想用别的名字）**：直接改 `app/seams.py` 里对应函数的两行，例如
+
+  ```python
+  def verify_task(task_no: str):
+      from app.verification.engine import check_task   # 你真正的实现
+      return check_task(task_no)
+  ```
+
+| 接缝 key | 默认找哪里 | 约定签名 | 谁在用 |
 | --- | --- | --- | --- |
-| 触发一次工作流 | `app.workflow.service.start_run` | `start_run(wf_id: int, trigger: str) -> {"run_id": int}` 或 `int` | `POST /api/workflows/{id}/run`（画布页的「执行」按钮） |
-| DAG 校验（可选） | `app.workflow.engine.validate_dag` | `validate_dag(dag: dict) -> list[str]`（空列表=通过） | 保存工作流时；没提供就用我写的 `api/_dag.py` 兜底 |
-| 手动验证 | `app.verification.service.verify_task` | `verify_task(task_no: str) -> dict{achievement, confidence, conclusion}` | `POST /api/verify/{task_no}` |
-| 生成报告 | `app.verification.report.generate_report`（备选 `app.reports.generator.generate_report`） | `generate_report(run_id: int) -> int`（返回 report_id） | `POST /api/reports/generate?run_id=` |
-| 知识库入库 | `app.knowledge.loader.ingest` | `ingest(path: str, doc_id: int) -> {"chunk_count": int, "chroma_ids": [...]}` | `POST /api/knowledge/upload`（后台线程里跑，别阻塞） |
-| 知识库检索 | `app.knowledge.retriever.search` | `search(question: str, top_k: int) -> [{title, chunk_text, score, doc_id}]` | `POST /api/knowledge/search` |
+| `start_run` | `app.workflow.service.start_run` | `start_run(wf_id: int, trigger: str) -> {"run_id": int}` 或 `int` | `POST /api/workflows/{id}/run`（画布「执行」按钮） |
+| `validate_dag` | `app.workflow.engine.validate_dag`（备选 `validate`） | `validate_dag(dag: dict) -> list[str]`，空=通过 | 保存工作流；**没提供或抛错就用基座本地闸门 `api/_dag.py`** |
+| `verify_task` | `app.verification.service.verify_task` | `verify_task(task_no: str) -> {achievement, confidence, conclusion}` | `POST /api/verify/{task_no}` |
+| `generate_report` | `app.verification.report.generate_report`（备选 `app.reports.generator.generate_report`） | `generate_report(run_id: int) -> int`（report_id） | `POST /api/reports/generate?run_id=` |
+| `ingest` | `app.knowledge.loader.ingest` | `ingest(path: str, doc_id: int) -> {"chunk_count": int, "chroma_ids": [...]}` | `POST /api/knowledge/upload`（后台线程跑，别阻塞） |
+| `search` | `app.knowledge.retriever.search` | `search(question: str, top_k: int) -> [{title, chunk_text, score, doc_id}]` | `POST /api/knowledge/search` |
 
-> 这五处如果队长想换名字，改 `api/*.py` 里的一行 `delegate("...", "...")` 即可，不用动别的。
+> 参数名怎么写都行：`seams` 会先读函数签名，签名认不出才退化成按位置传参，
+> **不会靠 `try/except TypeError` 重试**——那样 `start_run` 会建出两条 run。
+>
+> 体检：`GET /api/health` 的 `seams` 字段一眼看出六项谁 ready 谁 not_ready；
+> 启动日志也有一行「跨地盘接缝：就绪 [...] / 缺失 [...]」。
+
 
 ---
 

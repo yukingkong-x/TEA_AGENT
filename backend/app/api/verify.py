@@ -11,9 +11,10 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .. import seams
 from ..db import get_db
 from ..models.verifications import Verification
-from ._common import delegate, page_payload
+from ._common import page_payload
 
 router = APIRouter(prefix="/verify", tags=["verify"])
 
@@ -40,11 +41,7 @@ def to_dict(v: Verification) -> dict[str, Any]:
 
 @router.post("/{task_no}", summary="对某任务执行验证（调队长验证引擎）")
 def verify(task_no: str) -> dict[str, Any]:
-    verify_fn = delegate("app.verification.service", "verify_task", owner="队长")
-    try:
-        result = verify_fn(task_no)
-    except TypeError:
-        result = verify_fn(task_no=task_no)
+    result = seams.verify_task(task_no)
     return {"task_no": task_no, "result": result}
 
 
