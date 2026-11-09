@@ -1,0 +1,9 @@
+# 统一换行符：Windows 上 checkout 也不能把 shell 脚本写成 CRLF，
+# 否则 docker build 时容器里 /bin/sh 会报 "not found" 或 $'\r' 错误
+* text=auto eol=lf
+
+*.sh text eol=lf
+*.png binary
+*.jpg binary
+*.pdf binary
+*.xlsx binary
