@@ -223,3 +223,9 @@ __marimo__/
 node_modules/
 __pycache__/
 .pio/
+
+# 后端运行产物（队友B）
+backend/logs/
+backend/uploads/
+logs/
+*.log

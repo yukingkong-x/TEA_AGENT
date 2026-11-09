@@ -59,3 +59,60 @@ git push → GitHub 开 PR → 等队长 review 合并
 ## 卡住了
 
 群里 @ 队长，当天必须有人回；卡超过半天直接语音。
+
+---
+
+## 实际运行手册（2026-11-09 基座线落地后更新）
+
+### 一键启动
+
+```bash
+cp .env.example .env      # 只需填 LLM key，其余默认值可直接跑
+docker compose up -d --build
+# 后端 http://localhost:8000/docs   （前端 5173 要等队友A的 Dockerfile，用 --profile ui）
+```
+
+- 宿主机 MySQL 是 **3307**（躲开本机已装的 MySQL），容器内仍是 3306
+- 容器里跑不通网络时：`docker compose build --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple backend`
+- Chroma 在 compose 里是 `required: false`，镜像大、网络差也不会拖住平台启动
+
+### 已落地的东西（对照 PRD）
+
+| PRD | 落点 |
+| --- | --- |
+| 6.1~6.14 十四张表 | `app/models/`（一表一文件，启动 `create_all` 自动建） |
+| 5.1~5.5 MQTT 契约 | `app/core/mqtt_client.py`（QoS1 订阅、双通道 cmd、ack 两阶段、seq/msg_id 幂等） |
+| 5.5 在线三态 | `app/devices/registry.py`（45s / 120s，离线写 alerts + WS 广播） |
+| 5.3/5.4 指令通道 | `app/devices/command.py`（**唯一**下发出口，`issued_by` 白名单，duration 上限 120s） |
+| 7.4 REST 全清单 | `app/api/*.py`（含 `/ws/dashboard` 八种推送类型） |
+| 12.2 Mock 模拟器 | `app/mock/simulator.py`（三虚拟设备 + 五种故障注入 + 四档天气） |
+| 12.1 Mock/Real | `app/core/runtime_settings.py` + `POST /api/settings/mode`（切换即起停模拟器并广播） |
+| 21.2 六服务 compose | `docker-compose.yml` + `deploy/` |
+| O-001 设备种子 | `app/seed.py`（3 台真设备 + 10 个配置键，幂等） |
+
+### 常用自测命令
+
+```bash
+# 单元测试（不需要任何外部服务）
+.venv/Scripts/python.exe -m pytest tests -q
+
+# 看链路是否通
+curl http://localhost:8000/api/health
+curl http://localhost:8000/api/devices/mqtt
+
+# 手动浇水 5 秒（Mock）
+curl -X POST http://localhost:8000/api/devices/mock-k10-act-03/cmd \
+  -H "Content-Type: application/json" -d '{"action":"pump","params":{"duration_s":5}}'
+
+# 故障注入（演示两轮对照）
+curl -X POST http://localhost:8000/api/devices/fault -d '{"fault":"stuck_moisture"}' -H "Content-Type: application/json"
+curl -X DELETE http://localhost:8000/api/devices/fault
+```
+
+### 还没接的地方
+
+跨地盘调用的约定全写在 [`docs/contracts/api_seams.md`](../docs/contracts/api_seams.md)：
+队长提供 `app.workflow.service.start_run` / `app.verification.service.verify_task` /
+`app.verification.report.generate_report` / `app.knowledge.loader.ingest` / `app.knowledge.retriever.search`
+五个函数，没落地前对应接口返回 503（不是 500，前端能显示「模块未就绪」）。
+
