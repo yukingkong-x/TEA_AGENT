@@ -453,10 +453,16 @@ class Simulator:
         if scenario not in WEATHER_PRESETS:
             raise ValueError(f"未知天气档位 {scenario}，可选 {list(WEATHER_PRESETS)}")
         self.weather = scenario
+        # 单一事实源是 settings 表：Redis 缓存与内存态都跟着它走（工具池 get_weather 读表）
         try:
-            get_redis().set(Keys.weather_scenario(), scenario)
+            from ..core.runtime_settings import set_many
+
+            set_many({"weather_scenario": scenario})
         except Exception:  # pragma: no cover
-            pass
+            try:
+                get_redis().set(Keys.weather_scenario(), scenario)
+            except Exception:
+                pass
         logger.info("【Mock 天气】切换为 {}", scenario)
         return self.state()
 
