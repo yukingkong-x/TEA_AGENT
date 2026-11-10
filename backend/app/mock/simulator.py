@@ -14,6 +14,7 @@ import math
 import random
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -56,6 +57,7 @@ class SoilModel:
     moisture: float = 38.5  # 演示基线 38.5%，与 PRD 15.1 剧本一致
     dry_rate_per_min: float = 0.05  # %/min
     gain_per_s: float = 0.35  # %/s（浇水）
+    residual_floor: float = 12.0  # 残余含水量下限：束缚水蒸发不掉（否则隔夜必干到 0，第二天演示全是 0.0）
     soak_rate: float = 0.0  # 当前渗透速率 %/s
     soak_until: float = 0.0
     last_tick: float = field(default_factory=time.time)
@@ -67,8 +69,10 @@ class SoilModel:
         self.last_tick = now
         if dt <= 0:
             return
-        # 自然蒸发
-        self.moisture -= self.dry_rate_per_min / 60.0 * dt
+        # 自然蒸发：越接近残余含水量蒸发越慢（真实物理 + 保证隔夜不归零）
+        headroom = max(0.0, self.moisture - self.residual_floor)
+        taper = min(1.0, headroom / 20.0)  # 距下限 20% 以内线性放缓
+        self.moisture -= self.dry_rate_per_min / 60.0 * dt * taper
         # 缓慢渗透（只在自己有效窗口内生效）
         if now < self.soak_until:
             effective = min(dt, self.soak_until - (now - dt))
@@ -76,7 +80,7 @@ class SoilModel:
                 self.moisture += self.soak_rate * effective
         else:
             self.soak_rate = 0.0
-        self.moisture = max(0.0, min(100.0, self.moisture))
+        self.moisture = max(self.residual_floor, min(100.0, self.moisture))
 
     def irrigate(self, duration_s: float) -> float:
         """返回理论提升量（%）。stuck_moisture 注入时水照浇但湿度不涨。"""
@@ -104,6 +108,7 @@ class Simulator:
         self._running = False
 
         self.seq = {DEV_FIELD: 0, DEV_SOIL: 0, DEV_ACT: 0}
+        self.boot_id = ""  # start() 时生成；上报里带它，重启后 seq 归零也不被去重误杀
         self.soil = SoilModel()
         self.act_busy_until = 0.0
 
@@ -128,6 +133,9 @@ class Simulator:
             return
         self._running = True
         self._stop.clear()
+        # 本次开机的随机标识：随遥测上报，后端 seq 去重键带上它，
+        # 这样模拟器（真机同理）重启后 seq 归零也不会被误判成重复报文
+        self.boot_id = uuid.uuid4().hex[:8]
 
         self.soil.dry_rate_per_min = float(get_value("mock_dry_rate_per_min", 0.05))
         self.soil.gain_per_s = float(get_value("mock_pump_gain_per_s", 0.35))
@@ -296,22 +304,26 @@ class Simulator:
         next_tel = 0.0
         next_status = 0.0
         while not self._stop.is_set():
-            now = time.time()
-            if self._is_offline(device_id):
-                self._stop.wait(1.0)
-                continue
-            if now >= next_status:
-                self._publish_status(device_id)
-                next_status = now + status_s
-            if now >= next_tel:
-                self._publish_once(device_id, metrics_fn=metrics_fn)
-                next_tel = now + telemetry_s
+            try:
+                now = time.time()
+                if self._is_offline(device_id):
+                    self._stop.wait(1.0)
+                    continue
+                if now >= next_status:
+                    self._publish_status(device_id)
+                    next_status = now + status_s
+                if now >= next_tel:
+                    self._publish_once(device_id, metrics_fn=metrics_fn)
+                    next_tel = now + telemetry_s
+            except Exception as exc:  # 线程绝不能静默死掉：死了遥控还在、遥测没了，最难排查
+                logger.error("遥测循环 {} 异常（继续运行）：{}: {}", device_id, type(exc).__name__, exc)
             self._stop.wait(0.5)
 
     def _publish_status(self, device_id: str) -> None:
         payload = {
             "device_id": device_id,
             "online": True,
+            "boot_id": self.boot_id,
             "rssi": -55 - random.randint(0, 12),
             "uptime_s": int(time.time() % 100000),
             "ts": int(time.time()),
@@ -332,6 +344,7 @@ class Simulator:
             "device_id": device_id,
             "ts": int(time.time()),
             "seq": seq,
+            "boot_id": self.boot_id,
             "rssi": -55 - random.randint(0, 12),
             "metrics": metrics,
         }

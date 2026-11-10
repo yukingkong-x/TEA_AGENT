@@ -70,7 +70,11 @@ class Keys:
         return f"{cls.PREFIX}:device:{device_id}:offline_alerted"
 
     @classmethod
-    def dedup_seq(cls, device_id: str, seq: int | str) -> str:
+    def dedup_seq(cls, device_id: str, seq: int | str, boot_id: str | None = None) -> str:
+        # seq 在设备/模拟器重启后会归零重计，键里必须带 boot_id（本次开机的随机标识），
+        # 否则重启后 1 小时内的遥测全被当成重复丢掉（真机重启同样会踩）
+        if boot_id:
+            return f"{cls.PREFIX}:dedup:seq:{device_id}:{boot_id}:{seq}"
         return f"{cls.PREFIX}:dedup:seq:{device_id}:{seq}"
 
     @classmethod

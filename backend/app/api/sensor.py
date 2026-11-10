@@ -85,6 +85,8 @@ def history(
     now = datetime.now()
     since = _parse_dt(start, now - timedelta(hours=6))
     until = _parse_dt(end, now)
+    # limit 必须取「最新的 N 个点」：先按 ts 倒序取 limit 条，再反转回升序。
+    # （此前升序 + limit 返回的是窗口里最老的 N 个点，遥测明明在流、接口却一直给旧数据）
     rows = db.scalars(
         select(SensorData)
         .where(
@@ -93,9 +95,10 @@ def history(
             SensorData.ts >= since,
             SensorData.ts <= until,
         )
-        .order_by(SensorData.ts.asc())
+        .order_by(SensorData.ts.desc())
         .limit(limit)
     ).all()
+    rows = list(reversed(rows))
     points = [
         {
             "ts": r.ts.isoformat(sep=" ", timespec="seconds"),

@@ -21,6 +21,7 @@
 | Mock 天气数据源 | `app.mock.simulator` | `get_weather(city="A区茶园", hours=24) -> {temp_range, rain_prob, frost_risk, scenario}` | PRD 7.3 的 `get_weather` 工具直接调它 |
 | 任务号生成 | `app.core.ids` | `new_task_no()` / `new_msg_id()` | Redis INCR，按天归零 |
 | API Key 加解密 | `app.core.crypto` | `encrypt/decrypt/mask` | settings 表里的 `llm_api_key` 已加密 |
+| **统一查询口径** | `app.core.queries` | `soil_status(db, device_id=None)` → `{moisture, state: dry/ok/wet/unknown, target_range, trend_per_min, points, online}`；`env_status(db, device_id=None)` → `{readings: {temperature_c, humidity_air, lux, co2?}, online}`；`device_overview(db)`；`raise_alert(db, level, source, message)`（level ∈ info/warning/critical，写库+推 WS） | **工具池取数只准走这里**：`get_soil_status` / `get_env_status` / `raise_alert` 直接调用，Mock/Real 口径只有一份 |
 
 ### 基座需要队长提供的（**只认 `app/seams.py` 这一个文件**）
 
@@ -99,6 +100,10 @@ WS 消息统一：`{"type": "...", "data": {...}, "ts": 1730700000}`，type ∈
 | 7 | 5.2 遥测 `metrics` 允许缺键 | 非数值指标跳过并告警（不允许错型） | 与 PRD「允许缺键不允许错型」一致 |
 | 8 | 6.14 `llm_api_key` 加密存 | Fernet（SECRET_KEY 派生）+ `enc:` 前缀，接口读一律掩码 | SECRET_KEY 换掉后旧 key 解不开，设置页需重填 |
 | 9 | 7.4 `GET /docs` | FastAPI 自带 `/docs`（不在 `/api` 下） | 与框架默认一致，PRD 行文里的 `/docs` 本来就是根路径 |
+| 10 | 5.4 幂等去重 `device_id+seq` | seq 去重键带上报文里的 `boot_id`（本次开机的随机标识），TTL 120s | 设备/模拟器重启后 seq 归零重计：原实现（TTL 3600、不含 boot_id）会让重启后 1 小时内的遥测全被当成重复静默丢弃——真机重启同样会踩。QoS1 秒级重复由 120s TTL 覆盖，`msg_id` 去重不变 |
+| 11 | （PRD 未写）土壤模型加残余含水量下限 12% | 蒸发在接近下限时线性放缓，湿度不再无限下降 | 隔夜跑 14 小时会把湿度耗到 0%，第二天演示全是 0.0；真实土壤束缚水也蒸发不掉 |
+| 12 | （PRD 未写）`GET /api/sensor/history` 的 `limit` 语义 | 取**最新** N 个点（先倒序取再反转） | 此前升序+limit 返回窗口里最老的 N 个点，前端曲线和 `get_soil_status` 会拿到几小时前的旧数据 |
+| 13 | （运维注意）宿主机休眠会导致遥测断流 | 演示脚本预演前有数据龄体检；`scripts/demo_rehearsal.py` 遇陈旧数据自动等待新鲜点 | Windows 睡眠会暂停 Docker VM；演示前确认 `soil_age` < 70s（见第 0 幕） |
 
 ---
 
