@@ -54,7 +54,10 @@ def _handle_telemetry(device_id: str, payload: dict[str, Any]) -> None:
         logger.warning("遥测报文缺 metrics：{}", payload)
         return
 
-    if seq is not None and not mark_once(Keys.dedup_seq(device_id, seq), ttl_s=3600):
+    # seq 去重只防 QoS1 秒级重复，TTL 给 120s 足够；配合 boot_id 让设备重启后 seq 归零也不误杀。
+    # （此前 TTL=3600 且键不含 boot_id，重启后新遥测被当成重复静默丢一小时）
+    boot_id = payload.get("boot_id")
+    if seq is not None and not mark_once(Keys.dedup_seq(device_id, seq, boot_id), ttl_s=120):
         logger.debug("遥测重复丢弃：{} seq={}", device_id, seq)
         return
 
