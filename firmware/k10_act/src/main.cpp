@@ -17,6 +17,10 @@ const char* ack_topic       = "tea/device/k10-act-03/ack";
 #define TFT_CS  7
 #define TFT_RST 14
 #define TFT_BL  21
+// DFRobot_GDL 未提供灰色，手动定义 RGB565 灰色（离线状态点用）
+#ifndef COLOR_RGB565_GREY
+#define COLOR_RGB565_GREY 0x8410
+#endif
 DFRobot_ST7789_240x320_HW_SPI screen(TFT_DC, TFT_CS, TFT_RST);
 
 const int  relay_pin    = 1;      // GPIO1，低电平触发（PRD 4.2）
