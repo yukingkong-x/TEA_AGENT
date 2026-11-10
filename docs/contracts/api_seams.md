@@ -22,6 +22,27 @@
 | 任务号生成 | `app.core.ids` | `new_task_no()` / `new_msg_id()` | Redis INCR，按天归零 |
 | API Key 加解密 | `app.core.crypto` | `encrypt/decrypt/mask` | settings 表里的 `llm_api_key` 已加密 |
 | **统一查询口径** | `app.core.queries` | `soil_status(db, device_id=None)` → `{moisture, state: dry/ok/wet/unknown, target_range, trend_per_min, points, online}`；`env_status(db, device_id=None)` → `{readings: {temperature_c, humidity_air, lux, co2?}, online}`；`device_overview(db)`；`raise_alert(db, level, source, message)`（level ∈ info/warning/critical，写库+推 WS） | **工具池取数只准走这里**：`get_soil_status` / `get_env_status` / `raise_alert` 直接调用，Mock/Real 口径只有一份 |
+| **工具池接线层** | `app.core.tool_impl` | `get_registry()` → 队长的注册表（9 个桩已换真实现）；`wire_into_app(app)` 挂 MCP | 组合根模式，见下节 |
+
+### 工具池已接线（2026-11-10 实测，队长 `tools.py` 一行不用改）
+
+`app/core/tool_impl.py` 在启动时把队长 `tools.py` 里 9 个 `ToolNotReady` 桩换成真实现，
+**保留他的描述与参数 schema，只换 `fn`**。队长想自己接管时，删掉 `_WIRED` 里对应一行即可。
+
+| 工具 | 真实现 | 数据/通道 |
+| --- | --- | --- |
+| `get_weather` | `tool_impl.get_weather` | settings 表 `weather_scenario` → 模拟器 `WEATHER_PRESETS`（**单一事实源**，改配置即时联动） |
+| `get_soil_status` / `get_env_status` | `queries.soil_status` / `env_status` | `sensor_data` 最新点 + 趋势 |
+| `send_device_cmd` | `command.send_cmd(issued_by="agent:executor")` | 唯一指令出口，白名单已预留 `agent:executor` |
+| `create_task` | 直接插 `tasks` 表 | `new_task_no()`，status=pending |
+| `raise_alert` | `queries.raise_alert` | alerts 表 + WS 广播 |
+| `verify_result` / `write_report` / `query_knowledge` | `seams.verify_task` / `generate_report` / `search` | 队长的验证/报告/知识库，未就绪时错误带约定签名回填给 LLM |
+
+**MCP Server 挂载**：`McpSseServer.build_app()` 自带 `/mcp/sse` 与 `/mcp/messages`，
+必须用 `app.mount("/", ...)`（根挂载）；`mount("/mcp")` 会叠成 `/mcp/mcp/*`，
+`include_router` 也挂不了（返回的是完整 FastAPI 应用）——队长 docstring 里那行已过时。
+
+**已知待补**：`/mcp/messages` 目前无鉴权（比赛演示可接受，公网部署前需加 token）。
 
 ### 基座需要队长提供的（**只认 `app/seams.py` 这一个文件**）
 
@@ -110,6 +131,9 @@ WS 消息统一：`{"type": "...", "data": {...}, "ts": 1730700000}`，type ∈
 ## 四、还没做的（等队长/队友 C 的输入）
 
 - `app/api/verify.py`、`knowledge.py`、`reports.py` 三处 503 依赖队长落地（见上表）
+- 6 个接缝目前全 `not_ready`：队长的 `workflow/`、`verification/`、`knowledge/` 三个目录尚未提交；
+  他的 `agents/`（工具池 + Runner + MCP）已实测可跑，接线层见上节
+- `/mcp/messages` 无鉴权（内部工具池，公网部署前需加 token 或限制来源）
 - 报告 PDF 导出（F-022 另一半）在前端，后端只出 Markdown
 - Real 模式端到端（REQ-H-003）要等队友 C 三板同网段，基座侧已就绪
 - `docs/contracts/` 里没有 MQTT 契约变更：报文严格照 PRD 第 5 章实现
