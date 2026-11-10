@@ -75,6 +75,15 @@ app.add_middleware(
 app.include_router(api_router)
 app.include_router(ws_router)  # /ws/dashboard 不带 /api 前缀
 
+# 队长的智能体工具池（app/agents）：合并顺序是基座 PR 先进 main，他的分支可能
+# 还没合进来——所以守卫式导入，缺 agents 目录时平台照常启动，工具池/MCP 缺席。
+try:
+    from .core import tool_impl
+
+    tool_impl.wire_into_app(app)  # 工具池接线 + MCP Server（/mcp/sse、/mcp/messages）
+except ImportError as exc:
+    logger.warning("智能体工具池未就绪（app.agents 缺席，合并队长分支后自动启用）：{}", exc)
+
 
 @app.exception_handler(seams.SeamNotReady)
 async def seam_not_ready_handler(request: Request, exc: seams.SeamNotReady) -> JSONResponse:
