@@ -16,7 +16,7 @@ export function App() {
   const [confirmOpen, setConfirmOpen] = useState(false)
 
   return (
-    <div className="flex h-dvh overflow-hidden bg-ink text-paper">
+    <div className="flex h-dvh w-screen max-w-[100vw] overflow-hidden bg-ink text-paper">
       <a
         href="#main"
         className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-3 focus:z-50 focus:rounded-btn focus:bg-panel focus:px-3 focus:py-2"
@@ -29,7 +29,7 @@ export function App() {
       <Sidebar open={menuOpen} onNavigate={() => setMenuOpen(false)} />
       <div className="flex min-w-0 flex-1 flex-col">
         <Topbar onMenu={() => setMenuOpen(true)} onStart={() => setConfirmOpen(true)} />
-        <main id="main" className="min-h-0 flex-1 overflow-auto px-4 py-6 sm:px-6">
+        <main id="main" className="flex min-h-0 flex-1 flex-col overflow-auto px-4 py-4 sm:px-6">
           <Routes>
             <Route path="/" element={<DashboardPage />} />
             <Route path="/canvas" element={<CanvasPage />} />

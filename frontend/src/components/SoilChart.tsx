@@ -21,7 +21,7 @@ export function SoilChart() {
       tooltip: {
         trigger: 'axis',
         backgroundColor: '#FFFFFF',
-        borderColor: '#E4DDD4',
+        borderColor: '#E3EBE6',
         textStyle: { color: '#1A1A1A', fontFamily: 'Noto Sans SC' },
         valueFormatter: (value: number) => `${value.toFixed(1)}%`,
       },
@@ -29,10 +29,10 @@ export function SoilChart() {
         type: 'category',
         data: labels,
         boundaryGap: false,
-        axisLine: { lineStyle: { color: '#E4DDD4' } },
+        axisLine: { lineStyle: { color: '#E3EBE6' } },
         axisTick: { show: false },
         axisLabel: {
-          color: '#6F675F',
+          color: '#66756C',
           fontFamily: 'DIN Alternate, ui-monospace, monospace',
           interval: 3,
         },
@@ -41,9 +41,9 @@ export function SoilChart() {
         type: 'value',
         min: 30,
         max: 55,
-        splitLine: { lineStyle: { color: '#EFEAE3' } },
+        splitLine: { lineStyle: { color: '#E7EEE9' } },
         axisLabel: {
-          color: '#6F675F',
+          color: '#66756C',
           fontFamily: 'DIN Alternate, ui-monospace, monospace',
           formatter: '{value}%',
         },
@@ -55,11 +55,11 @@ export function SoilChart() {
           data: soilDay,
           smooth: 0.25,
           symbol: 'none',
-          lineStyle: { color: '#2F7A4A', width: 2 },
+          lineStyle: { color: '#1F7A45', width: 2.5 },
           areaStyle: {
             color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-              { offset: 0, color: 'rgba(47, 122, 74, 0.2)' },
-              { offset: 1, color: 'rgba(47, 122, 74, 0)' },
+              { offset: 0, color: 'rgba(31, 122, 69, 0.22)' },
+              { offset: 1, color: 'rgba(31, 122, 69, 0)' },
             ]),
           },
           markLine: {
@@ -70,11 +70,11 @@ export function SoilChart() {
                 yAxis: 40,
                 label: {
                   formatter: '缺水线 40%',
-                  color: '#9A5B12',
+                  color: '#8A6414',
                   fontFamily: 'Noto Sans SC',
                   position: 'insideStartTop',
                 },
-                lineStyle: { color: '#C47B2B', type: 'dashed', width: 1 },
+                lineStyle: { color: '#E4B423', type: 'dashed', width: 1 },
               },
             ],
           },
