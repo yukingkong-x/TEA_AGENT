@@ -79,9 +79,9 @@ export const soilDay = [
 
 export const metrics = [
   { id: 'online', label: '在线设备', value: 3, suffix: '', hint: '三块板都有心跳' },
-  { id: 'tasks', label: '今日任务', value: 0, suffix: '', hint: '还没有派发' },
-  { id: 'loop', label: '闭环成功率', value: null, suffix: '%', hint: '完成巡园后计算' },
-  { id: 'rate', label: '平均达成率', value: null, suffix: '%', hint: '完成巡园后计算' },
+  { id: 'tasks', label: '今日任务', value: 9, suffix: '', hint: '打开任务中心查看' },
+  { id: 'loop', label: '闭环成功率', value: 100, suffix: '%', hint: '模拟巡园已闭环' },
+  { id: 'rate', label: '平均达成率', value: 100, suffix: '%', hint: '第 2 轮 100.00%' },
 ] as const
 
 export const alertText = 'A区缺水预警：土壤湿度低于 40%，可以开始一轮巡园。'
@@ -96,19 +96,3 @@ export const agents = [
   { key: 'verifier', name: '验证审计官', mark: '验', job: '用复测计算达成率' },
 ]
 
-export const flowNodes = [
-  { id: 'n1', name: '开始', kind: '起止' },
-  { id: 'n2', name: '巡园播报', kind: '巡园管家' },
-  { id: 'n3', name: '三方会诊', kind: '并行' },
-  { id: 'n7', name: '灌溉决策', kind: '决策官' },
-  { id: 'n8', name: '决策分流', kind: '条件' },
-  { id: 'n13', name: '结束', kind: '起止' },
-]
-
-export const consultNodes = [
-  { id: 'n4', name: '气象评估' },
-  { id: 'n5', name: '墒情分析' },
-  { id: 'n6', name: '植保核查' },
-]
-
-export const taskColumns = ['任务号', '类型', '目标', '优先级', '分数', '状态', '重试', '耗时', '创建时间']

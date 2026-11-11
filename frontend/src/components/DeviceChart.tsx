@@ -17,7 +17,7 @@ export function DeviceChart({ device }: { device: Device }) {
       xAxis: {
         type: 'category',
         data: device.series.map((_, index) => `${index + 1}`),
-        axisLine: { lineStyle: { color: '#E4DDD4' } },
+        axisLine: { lineStyle: { color: '#E3EBE6' } },
         axisTick: { show: false },
         axisLabel: { show: false },
       },
@@ -34,7 +34,7 @@ export function DeviceChart({ device }: { device: Device }) {
           data: device.series,
           smooth: 0.2,
           symbol: 'none',
-          lineStyle: { color: '#2F7A4A', width: 2 },
+          lineStyle: { color: '#1F7A45', width: 2 },
         },
       ],
     })

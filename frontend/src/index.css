@@ -10,14 +10,14 @@
   }
 
   html {
-    background: #f4f7f2;
+    background: #e7eee9;
   }
 
   body {
     margin: 0;
     overflow: hidden;
-    background: #f4f7f2;
-    color: #1a1a1a;
+    background: #e7eee9;
+    color: #17211b;
     font-family: 'Noto Sans SC', sans-serif;
     font-size: 16px;
     line-height: 1.5;
@@ -34,13 +34,14 @@
   }
 
   :focus-visible {
-    outline: 2px solid #2f7a4a;
+    outline: 2px solid #1f7a45;
     outline-offset: 2px;
   }
 
   h1 {
-    font-family: 'Noto Serif SC', serif;
-    font-weight: 500;
+    font-family: 'Noto Sans SC', sans-serif;
+    font-weight: 600;
+    letter-spacing: -0.03em;
   }
 }
 
@@ -51,8 +52,8 @@
     align-items: center;
     justify-content: center;
     gap: 8px;
-    border-radius: 8px;
-    padding: 0 20px;
+    border-radius: 999px;
+    padding: 0 18px;
     font-size: 16px;
     font-weight: 500;
     line-height: 1;
@@ -67,14 +68,14 @@
   }
 
   .btn-primary {
-    background: #2f7a4a;
-    color: #f4f7f2;
+    background: #17211b;
+    color: #f4fbf6;
   }
 
   .btn-ghost {
-    border: 1px solid #d5e6da;
-    background: #fff;
-    color: #1a1a1a;
+    border: 0;
+    background: #e5f3ea;
+    color: #17211b;
   }
 
   .lift {
@@ -100,12 +101,12 @@
 
 @media (hover: hover) and (pointer: fine) {
   .btn-primary:hover {
-    background: #1f5c36;
+    background: #0e1c16;
     transform: translateY(-1px);
   }
 
   .btn-ghost:hover {
-    background: #f4f7f2;
+    background: #d7eddf;
     transform: translateY(-1px);
   }
 
@@ -115,25 +116,6 @@
 
   .lift:hover {
     transform: translateY(-2px);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .page-enter,
-  .breath {
-    animation: none;
-  }
-
-  .btn,
-  .lift {
-    transition: none;
-  }
-
-  .btn:active,
-  .btn-primary:hover,
-  .btn-ghost:hover,
-  .lift:hover {
-    transform: none;
   }
 }
 
@@ -149,9 +131,70 @@
 @keyframes breath {
   0%,
   100% {
-    box-shadow: 0 0 0 0 rgba(47, 107, 74, 0.45);
+    box-shadow: 0 0 0 0 rgba(47, 122, 74, 0.45);
   }
   50% {
-    box-shadow: 0 0 0 8px rgba(47, 107, 74, 0);
+    box-shadow: 0 0 0 8px rgba(47, 122, 74, 0);
+  }
+}
+
+@keyframes dash-flow {
+  to {
+    stroke-dashoffset: -24;
+  }
+}
+
+@keyframes badge-flash {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.edge-flow {
+  animation: dash-flow 0.9s linear infinite;
+}
+
+.badge-flash {
+  animation: badge-flash 1.4s ease-in-out infinite;
+}
+
+.react-flow__node {
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+
+.react-flow__controls-button {
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+}
+
+.rounded-card {
+  box-shadow: 0 10px 30px rgba(23, 48, 38, 0.05);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-enter,
+  .breath,
+  .edge-flow,
+  .badge-flash {
+    animation: none;
+  }
+
+  .btn,
+  .lift {
+    transition: none;
+  }
+
+  .btn:active,
+  .btn-primary:hover,
+  .btn-ghost:hover,
+  .lift:hover {
+    transform: none;
   }
 }
