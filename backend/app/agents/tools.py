@@ -6,8 +6,9 @@
 - 通过 MCP Server(SSE /mcp)对外暴露,见 mcp_server.py;
 - 依赖他人地盘的工具显式抛 ToolNotReady(11.13 前逐个接入,勿静默造假数据)。
 
-接入点(给队友 B):get_soil_status / get_env_status 走数据源适配层(REQ-F-019,
-PRD 12.1),raise_alert 写 alerts 表 + WS 推送。
+接入点(给队友 B):get_weather 统一走 settings.weather_scenario(由
+core/tool_impl.wire() 启动时覆盖本占位);get_soil_status / get_env_status 走
+数据源适配层(REQ-F-019,PRD 12.1);raise_alert 写 alerts 表 + WS 推送。
 """
 from __future__ import annotations
 
@@ -103,29 +104,6 @@ async def wait_penetration(seconds: int) -> dict:
     return {"waited_s": seconds}
 
 
-# ─────────────────────────── Mock 天气数据源(PRD 12.3)───────────────────────────
-# 固定档位可切换:演示"降雨暂缓灌溉"分支时切 rainy。接入模拟器/设置页时复用 set_weather_profile。
-
-WEATHER_PROFILES: dict[str, dict] = {
-    "sunny": {"temp_range": [14, 26], "rain_prob": 10, "frost_risk": False},
-    "cloudy": {"temp_range": [12, 22], "rain_prob": 30, "frost_risk": False},
-    "rainy": {"temp_range": [11, 18], "rain_prob": 70, "frost_risk": False},
-    "frost": {"temp_range": [1, 8], "rain_prob": 20, "frost_risk": True},
-}
-_weather_profile = "sunny"
-
-
-def get_weather(city: str, hours: int = 12) -> dict:
-    return {**WEATHER_PROFILES[_weather_profile], "city": city, "hours": hours}
-
-
-def set_weather_profile(name: str) -> None:
-    if name not in WEATHER_PROFILES:
-        raise ValueError(f"未知天气档位: {name},可选 {list(WEATHER_PROFILES)}")
-    global _weather_profile
-    _weather_profile = name
-
-
 # ─────────────────────────── 待接入工具(显式抛错,勿造假数据)───────────────────────────
 
 def _not_ready(name: str, reason: str):
@@ -138,11 +116,11 @@ def build_default_registry(bindings: Optional[dict[str, AgentSpec]] = None) -> T
     """按 PRD 7.3 注册全部工具;bindings 默认取 AGENTS(PRD 8.1)。"""
     registry = ToolRegistry(bindings=bindings or AGENTS)
     _obj = {"type": "object"}
-    registry.register("get_weather", "获取目标区域未来天气(Mock 档位数据源)",
+    registry.register("get_weather", "获取目标区域未来天气与气象风险(霜冻/降雨)",
                       {"type": "object",
                        "properties": {"city": {"type": "string"}, "hours": {"type": "integer"}},
                        "required": ["city"]},
-                      get_weather)
+                      _not_ready("get_weather", "天气统一走 settings.weather_scenario,由 core/tool_impl.wire() 启动时覆盖(队友 B)"))
     registry.register("get_soil_status", "获取土壤湿度、更新时间与趋势",
                       {"type": "object",
                        "properties": {"device_id": {"type": "string"}},

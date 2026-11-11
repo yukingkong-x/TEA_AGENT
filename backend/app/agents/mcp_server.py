@@ -2,7 +2,9 @@
 
 - 实现 MCP 协议 2024-11-05 的最小可用子集:initialize / ping / tools/list / tools/call;
 - 传输:HTTP + SSE(GET /mcp/sse 建立流,POST /mcp/messages 发 JSON-RPC);
-- 由队友 B 在 main.py 挂载:app.include_router(server.build_app())。
+- 挂载契约:build_app() 返回完整 FastAPI 子应用,自带 /mcp/sse、/mcp/messages 前缀,
+  须 `app.mount("/", server.build_app())` 挂载(mount("/mcp") 会叠成 /mcp/mcp/* 错误路径);
+  实际接线在 core/tool_impl.py:wire_into_app()(队友 B)。
 """
 from __future__ import annotations
 

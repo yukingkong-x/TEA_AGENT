@@ -63,13 +63,14 @@ $env:PYTHONPATH = "$PWD\backend"
 
 （`-o` 参数是 pytest-asyncio 警告的临时解法，等 B 建好 `backend/pytest.ini` 后去掉。）
 
-## 工具接线状态（8 个工具等真数据）
+## 工具接线状态（9 个工具等真数据）
 
-已通：`calc_achievement`、`wait_penetration`、`get_weather`（临时档案数据，联调时换真接口）
+已通：`calc_achievement`、`wait_penetration`
 待接（调用会抛 `ToolNotReady`，**不造假数据**）：
 
 | 工具 | 等谁 |
 | ---- | ---- |
+| get_weather | B:settings.weather_scenario + core/tool_impl.wire() 启动时覆盖(已由 B 接线) |
 | get_soil_status / get_env_status | B:models/ 数据源适配层(11.12 前) |
 | create_task / send_device_cmd | F-014 调度器(11.11-12);send_device_cmd 仅 executor 可调 |
 | verify_result | F-016 验证引擎(11.13) |

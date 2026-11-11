@@ -3,14 +3,13 @@ import asyncio
 
 import pytest
 
+import app.agents.tools as tools_mod
 from app.agents.prompts import AGENTS
 from app.agents.tools import (
     ToolNotReady,
     ToolRegistry,
     build_default_registry,
     calc_achievement,
-    get_weather,
-    set_weather_profile,
 )
 
 # 手抄 PRD 7.3 工具池全表 + 9.2 工作流工具 wait_penetration
@@ -22,6 +21,7 @@ PRD_TOOL_NAMES = {
 
 # 11.13 前依赖他人地盘、尚未接入的工具(到各自 REQ 落地后应从本表移除)
 UNWIRED = {
+    "get_weather",                         # 天气统一走 settings.weather_scenario,由 tool_impl.wire() 覆盖(队友 B)
     "get_soil_status", "get_env_status",   # 队友 B 数据源适配层(REQ-F-019)
     "query_knowledge",                     # REQ-F-020 知识库
     "create_task",                         # REQ-F-014 调度器
@@ -77,26 +77,13 @@ def test_unwired_tools_raise_clear_tool_not_ready():
             asyncio.run(registry.invoke(name, {}))
 
 
-def test_get_weather_defaults_to_sunny_and_switches_profile():
-    # 断点:12.3 档位表/默认值被改错 → 本测试失败
-    try:
-        default = get_weather("杭州", hours=12)
-        assert default["city"] == "杭州"
-        assert default["hours"] == 12
-        assert default["temp_range"] == [14, 26]
-        assert default["rain_prob"] == 10
-        assert default["frost_risk"] is False
-
-        set_weather_profile("rainy")
-        rainy = get_weather("杭州")
-        assert rainy["rain_prob"] == 70
-
-        set_weather_profile("frost")
-        frost = get_weather("杭州")
-        assert frost["frost_risk"] is True
-        assert frost["temp_range"][0] < 4  # 触发霜冻预警的档位
-    finally:
-        set_weather_profile("sunny")
+def test_get_weather_has_no_mock_profiles_and_is_unwired():
+    # 断点:有人重新加入本地 mock 天气档位(与 settings.weather_scenario 分裂成两套天气)→ 本测试失败
+    assert not hasattr(tools_mod, "WEATHER_PROFILES")
+    assert not hasattr(tools_mod, "set_weather_profile")
+    registry = build_default_registry()
+    with pytest.raises(ToolNotReady, match="weather_scenario"):
+        asyncio.run(registry.invoke("get_weather", {"city": "杭州"}))
 
 
 def test_invoke_runs_sync_and_async_functions():
