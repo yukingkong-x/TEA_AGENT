@@ -1,4 +1,4 @@
-import { BaseEdge, EdgeLabelRenderer, getSmoothStepPath, type EdgeProps } from '@xyflow/react'
+import { BaseEdge, EdgeLabelRenderer, getBezierPath, type EdgeProps } from '@xyflow/react'
 
 export function FlowEdge({
   sourceX,
@@ -11,7 +11,7 @@ export function FlowEdge({
   data,
   markerEnd,
 }: EdgeProps) {
-  const [path, labelX, labelY] = getSmoothStepPath({
+  const [path, labelX, labelY] = getBezierPath({
     sourceX,
     sourceY,
     targetX,
@@ -29,21 +29,21 @@ export function FlowEdge({
         path={path}
         markerEnd={markerEnd}
         style={{
-          stroke: active ? '#2F7A4A' : '#8A948C',
+          stroke: active ? '#1F7A45' : '#86909C',
           strokeWidth: active ? 2 : 1.25,
           strokeDasharray: active ? '7 5' : undefined,
         }}
         className={active && !reduce ? 'edge-flow' : undefined}
       />
       {active && !reduce ? (
-        <circle r="3.5" fill="#2F7A4A">
+        <circle r="3.5" fill="#1F7A45">
           <animateMotion dur="1.2s" repeatCount="indefinite" path={path} />
         </circle>
       ) : null}
       {label ? (
         <EdgeLabelRenderer>
           <div
-            className="nodrag nopan absolute rounded-btn bg-panel px-1.5 py-0.5 text-[12px] text-dim"
+            className="nodrag nopan absolute rounded-btn bg-panel px-1.5 py-0.5 text-xs leading-none text-mute"
             style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
           >
             {label}

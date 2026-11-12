@@ -41,7 +41,7 @@ export const taskStatusMeta: Record<TaskStatus, { label: string; className: stri
   canceled: { label: '取消', className: 'bg-[#EEF1EF] text-[#5C675F]' },
 }
 
-const day = '2026-11-11'
+const day = '2026-11-12'
 
 function at(clock: string) {
   return `${day}T${clock}+08:00`
@@ -209,10 +209,10 @@ export const tasks: TaskRow[] = [
     status: 'canceled',
     retries: 0,
     elapsed: '—',
-    created: '2026-11-10T18:12:00+08:00',
+    created: '2026-11-11T08:12:00+08:00',
     trace: [
-      { status: 'pending', at: '2026-11-10T18:12:00+08:00' },
-      { status: 'canceled', at: '2026-11-10T18:14:22+08:00' },
+      { status: 'pending', at: '2026-11-11T08:12:00+08:00' },
+      { status: 'canceled', at: '2026-11-11T08:14:22+08:00' },
     ],
   },
 ]

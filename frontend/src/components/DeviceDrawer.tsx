@@ -35,11 +35,11 @@ export function DeviceDrawer({ device, onClose }: { device: Device | null; onClo
       <aside className="relative flex h-full w-full max-w-[420px] flex-col border-l border-line bg-panel" role="dialog" aria-modal="true" aria-labelledby="device-title">
         <div className="flex items-start justify-between gap-4 border-b border-line px-6 py-5">
           <div>
-            <p className="text-[13px] text-dim">{device.role}</p>
-            <h2 id="device-title" className="mt-1 text-xl font-medium">
+            <p className="text-xs leading-none text-mute">{device.role}</p>
+            <h2 id="device-title" className="mt-1 text-paper">
               {device.name}
             </h2>
-            <p className="mt-1 text-sm text-dim">
+            <p className="mt-1 text-sm leading-normal text-mute">
               {device.id} · {device.place} · {statusLabel[device.status]}
             </p>
           </div>
@@ -51,13 +51,13 @@ export function DeviceDrawer({ device, onClose }: { device: Device | null; onClo
           <dl className="grid grid-cols-3 gap-3">
             {device.detail.map((item) => (
               <div key={item.label} className="rounded-btn bg-ink px-3 py-3">
-                <dt className="text-[13px] text-dim">{item.label}</dt>
-                <dd className="num mt-2 text-lg text-paper">{item.value}</dd>
+                <dt className="text-xs leading-none text-mute">{item.label}</dt>
+                <dd className="num mt-2 text-base leading-none text-paper">{item.value}</dd>
               </div>
             ))}
           </dl>
-          <h3 className="mt-6 text-base font-medium">近 12 个读数</h3>
-          <p className="mt-1 text-sm text-dim">
+          <h3 className="mt-6 text-paper">近 12 个读数</h3>
+          <p className="mt-1 text-sm text-mute">
             {device.seriesName}，单位 {device.unit}
           </p>
           <div className="mt-3 rounded-card bg-ink p-3">
