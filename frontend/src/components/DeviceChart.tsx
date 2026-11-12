@@ -26,7 +26,7 @@ export function DeviceChart({ device }: { device: Device }) {
         min: flat ? 0 : undefined,
         max: flat ? 1 : undefined,
         splitLine: { lineStyle: { color: '#EFEAE3' } },
-        axisLabel: { color: '#6F675F', fontSize: 11 },
+        axisLabel: { color: '#86909C', fontSize: 12, fontFamily: 'DIN, DIN Alternate, sans-serif' },
       },
       series: [
         {

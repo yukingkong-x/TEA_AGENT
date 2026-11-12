@@ -22,7 +22,7 @@ export function SoilChart() {
         trigger: 'axis',
         backgroundColor: '#FFFFFF',
         borderColor: '#E3EBE6',
-        textStyle: { color: '#1A1A1A', fontFamily: 'Noto Sans SC' },
+        textStyle: { color: '#1D2129', fontFamily: 'PingFang SC, Noto Sans SC, sans-serif', fontSize: 14 },
         valueFormatter: (value: number) => `${value.toFixed(1)}%`,
       },
       xAxis: {
@@ -32,8 +32,9 @@ export function SoilChart() {
         axisLine: { lineStyle: { color: '#E3EBE6' } },
         axisTick: { show: false },
         axisLabel: {
-          color: '#66756C',
-          fontFamily: 'DIN Alternate, ui-monospace, monospace',
+          color: '#86909C',
+          fontFamily: 'DIN, DIN Alternate, sans-serif',
+          fontSize: 12,
           interval: 3,
         },
       },
@@ -43,8 +44,9 @@ export function SoilChart() {
         max: 55,
         splitLine: { lineStyle: { color: '#E7EEE9' } },
         axisLabel: {
-          color: '#66756C',
-          fontFamily: 'DIN Alternate, ui-monospace, monospace',
+          color: '#86909C',
+          fontFamily: 'DIN, DIN Alternate, sans-serif',
+          fontSize: 12,
           formatter: '{value}%',
         },
       },
@@ -71,7 +73,8 @@ export function SoilChart() {
                 label: {
                   formatter: '缺水线 40%',
                   color: '#8A6414',
-                  fontFamily: 'Noto Sans SC',
+                  fontFamily: 'PingFang SC, Noto Sans SC, sans-serif',
+                  fontSize: 12,
                   position: 'insideStartTop',
                 },
                 lineStyle: { color: '#E4B423', type: 'dashed', width: 1 },

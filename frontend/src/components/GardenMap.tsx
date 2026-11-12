@@ -17,7 +17,7 @@ export function GardenMap({ devices, onSelect }: { devices: Device[]; onSelect: 
         {Array.from({ length: 8 }, (_, index) => (
           <path key={index} d={`M132 ${156 + index * 24} H668`} stroke="#7EBE8C" strokeOpacity="0.95" strokeWidth="2" />
         ))}
-        <text x="132" y="112" fill="#6F675F" fontSize="16" fontFamily="Noto Serif SC, serif">
+        <text x="132" y="112" fill="#86909C" fontSize="14" fontFamily="PingFang SC, Noto Sans SC, sans-serif">
           A区茶垄
         </text>
       </svg>
@@ -30,8 +30,8 @@ export function GardenMap({ devices, onSelect }: { devices: Device[]; onSelect: 
           onClick={() => onSelect(device)}
         >
           <span className="pointer-events-none absolute bottom-8 left-1/2 w-max -translate-x-1/2 rounded-btn border border-line bg-panel px-3 py-2 text-left shadow-[0_8px_20px_rgba(26,26,26,0.08)]">
-            <span className="block text-[13px] text-paper">{device.name}</span>
-            <span className="num mt-1 block text-[13px] text-tea">{device.reading}</span>
+            <span className="block text-sm leading-normal text-paper">{device.name}</span>
+            <span className="num mt-1 block text-xs leading-none text-tea">{device.reading}</span>
           </span>
           <span className="grid h-11 w-11 place-items-center">
             <span className={`h-3.5 w-3.5 rounded-full ${dotClass[device.status]}`} />

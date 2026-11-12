@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { Route, Routes, useNavigate } from 'react-router-dom'
 import { ConfirmDialog } from './components/ConfirmDialog'
+import { Icon } from './components/Icon'
 import { Sidebar } from './components/Sidebar'
-import { Topbar } from './components/Topbar'
 import { CanvasPage } from './pages/CanvasPage'
 import { ChatPage } from './pages/ChatPage'
 import { DashboardPage } from './pages/DashboardPage'
@@ -16,7 +16,7 @@ export function App() {
   const [confirmOpen, setConfirmOpen] = useState(false)
 
   return (
-    <div className="flex h-dvh w-screen max-w-[100vw] overflow-hidden bg-ink text-paper">
+    <div className="flex h-dvh w-screen max-w-[100vw] overflow-hidden bg-[#F3F5F8] text-paper">
       <a
         href="#main"
         className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-3 focus:z-50 focus:rounded-btn focus:bg-panel focus:px-3 focus:py-2"
@@ -24,12 +24,16 @@ export function App() {
         跳到主要内容
       </a>
       {menuOpen ? (
-        <button type="button" className="fixed inset-0 z-20 bg-ink/60 md:hidden" aria-label="关闭导航" onClick={() => setMenuOpen(false)} />
+        <button type="button" className="fixed inset-0 z-20 bg-paper/30 md:hidden" aria-label="关闭导航" onClick={() => setMenuOpen(false)} />
       ) : null}
-      <Sidebar open={menuOpen} onNavigate={() => setMenuOpen(false)} />
+      <Sidebar open={menuOpen} onNavigate={() => setMenuOpen(false)} onStart={() => setConfirmOpen(true)} />
       <div className="flex min-w-0 flex-1 flex-col">
-        <Topbar onMenu={() => setMenuOpen(true)} onStart={() => setConfirmOpen(true)} />
-        <main id="main" className="flex min-h-0 flex-1 flex-col overflow-auto px-4 py-4 sm:px-6">
+        <div className="flex h-12 shrink-0 items-center px-4 md:hidden">
+          <button type="button" className="btn btn-ghost h-11 w-11 px-0" aria-label="打开导航" onClick={() => setMenuOpen(true)}>
+            <Icon name="menu" />
+          </button>
+        </div>
+        <main id="main" className="flex min-h-0 flex-1 flex-col overflow-auto px-4 pb-4 pt-4 sm:px-5">
           <Routes>
             <Route path="/" element={<DashboardPage />} />
             <Route path="/canvas" element={<CanvasPage />} />

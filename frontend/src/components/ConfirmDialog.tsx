@@ -38,10 +38,10 @@ export function ConfirmDialog({ open, title, body, confirmLabel, onConfirm, onCl
         aria-labelledby="confirm-title"
         className="relative z-10 w-full max-w-md rounded-card border border-line bg-panel p-6"
       >
-        <h2 id="confirm-title" className="text-xl font-medium text-paper">
+        <h2 id="confirm-title" className="text-paper">
           {title}
         </h2>
-        <p className="mt-3 text-base leading-7 text-dim">{body}</p>
+        <p className="mt-3 text-sm leading-normal text-dim">{body}</p>
         <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
           <Button tone="ghost" onClick={onClose} className="w-full sm:w-auto">
             取消

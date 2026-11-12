@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { PageFrame } from '../components/PageFrame'
 import { AlertBar } from '../components/AlertBar'
 import { DeviceDrawer } from '../components/DeviceDrawer'
 import { GardenMap } from '../components/GardenMap'
@@ -10,10 +11,11 @@ export function DashboardPage() {
   const [device, setDevice] = useState<Device | null>(null)
 
   return (
-    <div className="page-enter -mt-3 mx-auto flex w-full max-w-[1360px] flex-col gap-4">
+    <PageFrame title="总控">
+    <div className="flex flex-col gap-4 p-5">
       <header>
-        <h1 className="text-[34px] leading-none tracking-tight text-paper">A区茶垄</h1>
-        <p className="mt-2 inline-flex h-8 items-center gap-2 rounded-btn bg-[#FFF4CC] px-3 text-sm text-[#6E5314]">
+        <h2 className="text-paper">A区茶垄</h2>
+        <p className="mt-2 inline-flex h-8 items-center gap-2 rounded-btn bg-[#FFF4CC] px-3 text-xs leading-none text-[#6E5314]">
           <span className="h-1.5 w-1.5 rounded-full bg-[#E4B423]" aria-hidden="true" />
           土壤湿度 38.5%，低于缺水线 40%。
         </p>
@@ -36,17 +38,17 @@ export function DashboardPage() {
         </div>
       </section>
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-5">
-        <section className="overflow-hidden rounded-card border border-line bg-panel xl:col-span-3">
+        <section className="overflow-hidden rounded-2xl bg-[#F7F8FA] xl:col-span-3">
           <div className="flex items-center justify-between px-5 py-4">
-            <h2 className="text-base font-medium">地块</h2>
-            <p className="text-sm text-dim">点设备看读数</p>
+            <h2 className="text-paper">地块</h2>
+            <p className="text-sm text-mute">点设备看读数</p>
           </div>
           <GardenMap devices={devices} onSelect={setDevice} />
         </section>
-        <section className="flex min-h-[360px] flex-col rounded-card border border-line bg-panel xl:col-span-2">
+        <section className="flex min-h-[360px] flex-col rounded-2xl bg-[#F7F8FA] xl:col-span-2">
           <div className="px-5 py-4">
-            <h2 className="text-base font-medium">土壤湿度</h2>
-            <p className="mt-1 text-sm text-dim">近 24 小时，当前 38.5%。</p>
+            <h2 className="text-paper">土壤湿度</h2>
+            <p className="mt-1 text-sm text-mute">近 24 小时，当前 38.5%。</p>
           </div>
           <div className="min-h-0 flex-1 px-2 pb-3">
             <SoilChart />
@@ -56,5 +58,6 @@ export function DashboardPage() {
       <AlertBar />
       <DeviceDrawer device={device} onClose={() => setDevice(null)} />
     </div>
+    </PageFrame>
   )
 }

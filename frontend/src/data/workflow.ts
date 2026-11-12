@@ -9,7 +9,6 @@ export type FlowData = {
   input?: string
   expression?: string
   maxIterations?: number
-  tool?: string
   remain?: number
   loopOut?: boolean
   status: RunStatus
@@ -20,7 +19,8 @@ export type FlowData = {
 export type FlowNode = Node<FlowData>
 export type FlowEdge = Edge<{ active?: boolean }>
 
-const LAYOUT_KEY = 'zhiqiu.canvas.layout'
+const LAYOUT_KEY = 'zhiqiu.canvas.layout.v2'
+const LEGACY_LAYOUT_KEY = 'zhiqiu.canvas.layout'
 
 type SavedNode = {
   id: string
@@ -48,66 +48,68 @@ function node(
 }
 
 export function defaultNodes(): FlowNode[] {
+  const left = 0
+  const mid = 268
+  const right = 536
   return [
-    node('n1', 'start', { x: 0, y: 250 }, { name: '开始' }),
-    node('n2', 'agent', { x: 180, y: 228 }, {
+    node('n1', 'start', { x: mid + 76, y: 0 }, { name: '开始' }),
+    node('n2', 'agent', { x: mid, y: 96 }, {
       name: '巡园播报',
       agentKey: 'scout',
       input: '开始本轮巡园，目标区域：A区茶垄。',
     }),
-    node('n3', 'parallel', { x: 430, y: 236 }, { name: '三方会诊' }),
-    node('n4', 'agent', { x: 680, y: 40 }, {
+    node('n3', 'parallel', { x: mid, y: 236 }, { name: '三方会诊' }),
+    node('n4', 'agent', { x: left, y: 400 }, {
       name: '气象评估',
       agentKey: 'weather',
       input: '评估未来12小时天气对A区灌溉的影响。',
     }),
-    node('n5', 'agent', { x: 680, y: 220 }, {
+    node('n5', 'agent', { x: mid, y: 400 }, {
       name: '墒情分析',
       agentKey: 'soil',
       input: '分析A区土壤墒情并评级。',
     }),
-    node('n6', 'agent', { x: 680, y: 400 }, {
+    node('n6', 'agent', { x: right, y: 400 }, {
       name: '植保核查',
       agentKey: 'pest',
       input: '核查当前墒情下灌溉的农艺风险。',
     }),
-    node('n7', 'agent', { x: 980, y: 220 }, {
+    node('n7', 'agent', { x: mid, y: 560 }, {
       name: '灌溉决策',
       agentKey: 'decision',
       input: '汇总三方结论与本轮巡园播报，按决策树给出决策。',
     }),
-    node('n8', 'condition', { x: 1260, y: 200 }, {
+    node('n8', 'condition', { x: mid, y: 720 }, {
       name: '决策分流',
       expression: "context.last_decision == 'irrigate'",
     }),
-    node('n9', 'agent', { x: 1540, y: 40 }, {
+    node('n9', 'agent', { x: left, y: 900 }, {
       name: '执行浇水',
       agentKey: 'executor',
       input: '领取设备指令任务并执行，跟踪回执直到完成或熔断。',
     }),
-    node('n10', 'tool', { x: 1820, y: 40 }, {
+    node('n12', 'agent', { x: right, y: 900 }, {
+      name: '无需作业归档',
+      agentKey: 'verifier',
+      input: '本轮决策为暂不作业，生成简要记录。',
+    }),
+    node('n10', 'tool', { x: left, y: 1060 }, {
       name: '渗透等待',
-      tool: 'wait_penetration',
       input: '浇水结束后等待 90 秒再复测。',
       remain: 90,
     }),
-    node('n11', 'agent', { x: 2100, y: 40 }, {
+    node('n11', 'agent', { x: left, y: 1220 }, {
       name: '验证审计',
       agentKey: 'verifier',
       loopOut: true,
       input: '对刚完成的浇水任务执行复测验证，不达标启动 Self-Loop。',
     }),
-    node('n11b', 'loop', { x: 2100, y: 230 }, {
+    node('n11b', 'loop', { x: 320, y: 1400 }, {
       name: 'Self-Loop',
       maxIterations: 2,
       expression: "context.last_verification == 'success' or context.round > 2",
     }),
-    node('n12', 'agent', { x: 1540, y: 400 }, {
-      name: '无需作业归档',
-      agentKey: 'verifier',
-      input: '本轮决策为暂不作业，生成简要记录。',
-    }),
-    node('n13', 'end', { x: 2420, y: 236 }, { name: '结束' }),
+    node('n13', 'end', { x: mid + 76, y: 1600 }, { name: '结束' }),
   ]
 }
 
@@ -141,7 +143,7 @@ export function defaultEdges(): FlowEdge[] {
     link('e13', 'n10', 'n11'),
     link('e14', 'n11', 'n13'),
     link('e15', 'n11', 'n11b', { sourceHandle: 'loop', label: '未达标' }),
-    link('e16', 'n11b', 'n11', { label: '再验证' }),
+    link('e16', 'n11b', 'n11', { sourceHandle: 'back', targetHandle: 'again', label: '再验证' }),
     link('e17', 'n12', 'n13'),
   ]
 }
@@ -149,17 +151,19 @@ export function defaultEdges(): FlowEdge[] {
 export function loadNodes(): FlowNode[] {
   const base = defaultNodes()
   try {
-    const raw = localStorage.getItem(LAYOUT_KEY)
+    const fresh = localStorage.getItem(LAYOUT_KEY)
+    const raw = fresh ?? localStorage.getItem(LEGACY_LAYOUT_KEY)
     if (!raw) return base
     const saved = JSON.parse(raw) as SavedNode[]
     if (!Array.isArray(saved)) return base
+    const keepPosition = Boolean(fresh)
     const known = new Set(base.map((item) => item.id))
     const merged = base.map((item) => {
       const found = saved.find((entry) => entry.id === item.id)
       if (!found) return item
       return {
         ...item,
-        position: found.position ?? item.position,
+        position: keepPosition ? (found.position ?? item.position) : item.position,
         data: {
           ...item.data,
           name: found.name ?? item.data.name,
@@ -170,17 +174,19 @@ export function loadNodes(): FlowNode[] {
         },
       }
     })
-    const extras = saved
-      .filter((entry) => !known.has(entry.id) && entry.type && entry.position)
-      .map((entry) =>
-        node(entry.id, entry.type as FlowData['kind'], entry.position, {
-          name: entry.name || '未命名',
-          input: entry.input,
-          expression: entry.expression,
-          agentKey: entry.agentKey,
-          maxIterations: entry.maxIterations,
-        }),
-      )
+    const extras = keepPosition
+      ? saved
+          .filter((entry) => !known.has(entry.id) && entry.type && entry.position)
+          .map((entry) =>
+            node(entry.id, entry.type as FlowData['kind'], entry.position, {
+              name: entry.name || '未命名',
+              input: entry.input,
+              expression: entry.expression,
+              agentKey: entry.agentKey,
+              maxIterations: entry.maxIterations,
+            }),
+          )
+      : []
     return merged.concat(extras)
   } catch {
     return base
@@ -203,6 +209,7 @@ export function saveLayout(nodes: FlowNode[]) {
 
 export function clearLayout() {
   localStorage.removeItem(LAYOUT_KEY)
+  localStorage.removeItem(LEGACY_LAYOUT_KEY)
 }
 
 export const runScript: { at: number; done: string[]; running: string[] }[] = [

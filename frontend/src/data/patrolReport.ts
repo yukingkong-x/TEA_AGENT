@@ -26,7 +26,7 @@ export const patrolRounds: PatrolRound[] = [
     baseline: round1Baseline,
     measured: round1Measured,
     rate: achievement(round1Baseline, round1Measured),
-    diagnosis: '复测 45.0%，缺口 10.0%，达成率低于 60%。',
+    diagnosis: '缺口 10.0%，达成率低于 60%。',
     correction: `补灌 ${10 + gap} 秒`,
   },
   {
@@ -34,7 +34,7 @@ export const patrolRounds: PatrolRound[] = [
     baseline: round1Measured,
     measured: round2Measured,
     rate: achievement(round1Measured, round2Measured),
-    diagnosis: '复测 57.0%，落在目标 55%–65%。',
+    diagnosis: '落在目标 55%–65%。',
     correction: '不必再浇',
   },
 ]
