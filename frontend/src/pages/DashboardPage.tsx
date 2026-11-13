@@ -1,6 +1,5 @@
 import { useState } from 'react'
 import { PageFrame } from '../components/PageFrame'
-import { AlertBar } from '../components/AlertBar'
 import { DeviceDrawer } from '../components/DeviceDrawer'
 import { GardenMap } from '../components/GardenMap'
 import { MetricTile } from '../components/MetricTile'
@@ -32,7 +31,8 @@ export function DashboardPage() {
               value={item.value}
               suffix={item.suffix}
               hint={item.hint}
-              tone={item.id === 'online' ? 'green' : 'plain'}
+              tone={item.id === 'loop' || item.id === 'rate' ? (item.value >= 100 ? 'green' : 'yellow') : 'plain'}
+              to={item.id === 'tasks' ? '/tasks' : undefined}
             />
           ))}
         </div>
@@ -55,7 +55,6 @@ export function DashboardPage() {
           </div>
         </section>
       </div>
-      <AlertBar />
       <DeviceDrawer device={device} onClose={() => setDevice(null)} />
     </div>
     </PageFrame>

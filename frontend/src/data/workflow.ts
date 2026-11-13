@@ -17,7 +17,7 @@ export type FlowData = {
 }
 
 export type FlowNode = Node<FlowData>
-export type FlowEdge = Edge<{ active?: boolean }>
+type FlowEdge = Edge<{ active?: boolean }>
 
 const LAYOUT_KEY = 'zhiqiu.canvas.layout.v2'
 const LEGACY_LAYOUT_KEY = 'zhiqiu.canvas.layout'

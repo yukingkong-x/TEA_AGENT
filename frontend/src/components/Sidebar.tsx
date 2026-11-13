@@ -13,7 +13,7 @@ const items = [
 export function Sidebar({ open, onNavigate, onStart }: { open: boolean; onNavigate: () => void; onStart: () => void }) {
   return (
     <aside
-      className={`fixed inset-y-0 left-0 z-30 flex w-[220px] flex-col border-r border-[#ECEEF2] bg-panel transition-transform duration-200 md:static md:z-auto md:translate-x-0 ${
+      className={`no-print fixed inset-y-0 left-0 z-30 flex w-[220px] flex-col border-r border-[#ECEEF2] bg-panel transition-transform duration-200 md:static md:z-auto md:translate-x-0 ${
         open ? 'translate-x-0' : '-translate-x-full'
       }`}
     >

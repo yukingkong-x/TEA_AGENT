@@ -60,7 +60,7 @@ function Mark({ children }: { children: ReactNode }) {
   return <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-ink text-tea">{children}</span>
 }
 
-export function AgentNode({ data, selected }: NodeProps<FlowNode>) {
+function AgentNode({ data, selected }: NodeProps<FlowNode>) {
   const agent = agents.find((item) => item.key === data.agentKey)
   return (
     <div className={`w-[240px] rounded-card px-3 py-2.5 ${shell(data.status, selected)}`}>
@@ -91,7 +91,7 @@ export function AgentNode({ data, selected }: NodeProps<FlowNode>) {
   )
 }
 
-export function TermNode({ data, selected }: NodeProps<FlowNode>) {
+function TermNode({ data, selected }: NodeProps<FlowNode>) {
   const start = data.kind === 'start'
   return (
     <div className={`rounded-full px-4 py-1.5 text-sm ${shell(data.status, selected)}`}>
@@ -102,7 +102,7 @@ export function TermNode({ data, selected }: NodeProps<FlowNode>) {
   )
 }
 
-export function ParallelNode({ data, selected }: NodeProps<FlowNode>) {
+function ParallelNode({ data, selected }: NodeProps<FlowNode>) {
   return (
     <div className={`w-[240px] rounded-card px-3 py-2.5 ${shell(data.status, selected)}`}>
       <Handle type="target" position={Position.Top} className={port} />
@@ -122,7 +122,7 @@ export function ParallelNode({ data, selected }: NodeProps<FlowNode>) {
   )
 }
 
-export function ConditionNode({ data, selected }: NodeProps<FlowNode>) {
+function ConditionNode({ data, selected }: NodeProps<FlowNode>) {
   return (
     <div className={`w-[240px] rounded-card px-3 py-2.5 ${shell(data.status, selected)}`}>
       <SpeechPop data={data} />
@@ -145,7 +145,7 @@ export function ConditionNode({ data, selected }: NodeProps<FlowNode>) {
   )
 }
 
-export function ToolNode({ data, selected }: NodeProps<FlowNode>) {
+function ToolNode({ data, selected }: NodeProps<FlowNode>) {
   return (
     <div className={`w-[240px] rounded-card px-3 py-2.5 ${shell(data.status, selected)}`}>
       <SpeechPop data={data} />
@@ -171,7 +171,7 @@ export function ToolNode({ data, selected }: NodeProps<FlowNode>) {
   )
 }
 
-export function LoopNode({ data, selected }: NodeProps<FlowNode>) {
+function LoopNode({ data, selected }: NodeProps<FlowNode>) {
   return (
     <div className={`w-[240px] rounded-card border-dashed px-3 py-2.5 ${shell(data.status, selected)}`}>
       <SpeechPop data={data} />

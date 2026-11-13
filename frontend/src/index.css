@@ -233,6 +233,20 @@
   }
 }
 
+@media print {
+  body,
+  #root,
+  main {
+    height: auto !important;
+    overflow: visible !important;
+    background: white !important;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .page-enter,
   .breath,
