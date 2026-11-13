@@ -28,12 +28,12 @@ export function App() {
       ) : null}
       <Sidebar open={menuOpen} onNavigate={() => setMenuOpen(false)} onStart={() => setConfirmOpen(true)} />
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex h-12 shrink-0 items-center px-4 md:hidden">
+        <div className="no-print flex h-12 shrink-0 items-center px-4 md:hidden">
           <button type="button" className="btn btn-ghost h-11 w-11 px-0" aria-label="打开导航" onClick={() => setMenuOpen(true)}>
             <Icon name="menu" />
           </button>
         </div>
-        <main id="main" className="flex min-h-0 flex-1 flex-col overflow-auto px-4 pb-4 pt-4 sm:px-5">
+        <main id="main" className="flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto px-4 pb-4 pt-4 sm:px-5">
           <Routes>
             <Route path="/" element={<DashboardPage />} />
             <Route path="/canvas" element={<CanvasPage />} />

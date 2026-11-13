@@ -10,7 +10,7 @@ export type TaskStatus =
   | 'needs_human'
   | 'canceled'
 
-export type TaskTrace = {
+type TaskTrace = {
   status: TaskStatus
   at: string
 }

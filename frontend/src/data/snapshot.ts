@@ -84,15 +84,13 @@ export const metrics = [
   { id: 'rate', label: '平均达成率', value: 100, suffix: '%', hint: '第 2 轮 100.00%' },
 ] as const
 
-export const alertText = 'A区缺水预警：土壤湿度低于 40%，可以开始一轮巡园。'
-
 export const agents = [
-  { key: 'scout', name: '巡园管家', mark: '巡', avatar: '🍃', job: '汇总读数，发出预警' },
-  { key: 'weather', name: '气象员', mark: '气', avatar: '☁️', job: '看未来 12 小时天气' },
-  { key: 'soil', name: '土壤师', mark: '土', avatar: '🌱', job: '给墒情评级' },
-  { key: 'pest', name: '植保员', mark: '植', avatar: '🐞', job: '对照知识库查风险' },
-  { key: 'decision', name: '灌溉决策官', mark: '策', avatar: '💧', job: '决定浇不浇' },
-  { key: 'executor', name: '执行管家', mark: '执', avatar: '🔧', job: '唯一可以下水泵' },
-  { key: 'verifier', name: '验证审计官', mark: '验', avatar: '📋', job: '用复测计算达成率' },
+  { key: 'scout', name: '巡园管家', avatar: '🍃', job: '汇总读数，发出预警' },
+  { key: 'weather', name: '气象员', avatar: '☁️', job: '看未来 12 小时天气' },
+  { key: 'soil', name: '土壤师', avatar: '🌱', job: '给墒情评级' },
+  { key: 'pest', name: '植保员', avatar: '🐞', job: '对照知识库查风险' },
+  { key: 'decision', name: '灌溉决策官', avatar: '💧', job: '决定浇不浇' },
+  { key: 'executor', name: '执行管家', avatar: '🔧', job: '唯一可以下水泵' },
+  { key: 'verifier', name: '验证审计官', avatar: '📋', job: '用复测计算达成率' },
 ]
 
