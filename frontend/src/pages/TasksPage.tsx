@@ -1,6 +1,20 @@
 import { useEffect, useMemo, useState, type MouseEvent, type ReactNode } from 'react'
 import { PageFrame } from '../components/PageFrame'
-import { formatClock, tasks, taskStatusMeta, taskTypes, type TaskRow, type TaskStatus } from '../data/tasks'
+import { dashboardSocket } from '../api/socket'
+import type { DashMessage, TaskStatusEventDto } from '../api/types'
+import {
+  badgeFor,
+  formatClock,
+  isHoldOffline,
+  parseTs,
+  reasonText,
+  tasks,
+  taskStatusMeta,
+  taskTypes,
+  type TaskRow,
+  type TaskStatus,
+  type TaskTrace,
+} from '../data/tasks'
 
 const statusOrder = Object.keys(taskStatusMeta) as TaskStatus[]
 const typeTabs = taskTypes.filter((item) => item.id !== 'all')
@@ -12,7 +26,8 @@ const timeOptions = [
 const pageSizes = [10, 20, 50]
 
 function inRange(iso: string, range: 'today' | 'day' | 'all') {
-  const time = new Date(iso).getTime()
+  const time = parseTs(iso)?.getTime()
+  if (time === undefined) return true
   if (range === 'all') return true
   const now = Date.now()
   if (range === 'day') return now - time <= 24 * 60 * 60 * 1000
@@ -21,7 +36,73 @@ function inRange(iso: string, range: 'today' | 'day' | 'all') {
   return time >= start.getTime()
 }
 
+/** 事件时间：信封给的是秒级字符串（或 epoch ms），统一成 ISO，交给 parseTs 兜底 */
+function eventTime(data: { ts?: string | number }, message: DashMessage): string {
+  if (typeof data.ts === 'string') return data.ts
+  if (typeof data.ts === 'number') return new Date(data.ts).toISOString()
+  if (typeof message.ts === 'number' && message.ts > 0) return new Date(message.ts).toISOString()
+  if (typeof message.ts === 'string' && message.ts) return message.ts
+  return new Date().toISOString()
+}
+
+/**
+ * 把一条 task_status 事件并进列表。
+ * 轨迹直接取事件里的 `from → to`，不自己推状态机。
+ */
+function applyEvent(rows: TaskRow[], data: TaskStatusEventDto, at: string): TaskRow[] {
+  const index = rows.findIndex((row) => row.id === data.task_no)
+  const step: TaskTrace = {
+    from: (data.from ?? null) as TaskTrace['from'],
+    to: data.to as TaskStatus,
+    at,
+    reason: data.reason,
+    note: data.reason === 'retry_hold_offline' ? '设备离线，挂着等重试' : undefined,
+  }
+
+  if (index === -1) {
+    const fresh: TaskRow = {
+      id: data.task_no,
+      type: data.assigned_agent && !data.assigned_device ? 'agent_call' : 'device_cmd',
+      target: data.assigned_device ?? data.assigned_agent ?? '—',
+      priority: 5,
+      score: data.score ?? null,
+      status: data.to as TaskStatus,
+      retry_count: data.retry_count ?? 0,
+      elapsed: '—',
+      created: at,
+      run_id: data.run_id ?? null,
+      assigned_agent: data.assigned_agent ?? null,
+      assigned_device: data.assigned_device ?? null,
+      result: (data.result as TaskRow['result']) ?? null,
+      trace: [step],
+    }
+    return [fresh, ...rows]
+  }
+
+  const current = rows[index]
+  const last = current.trace[current.trace.length - 1]
+  // retry_hold_offline 会反复发 from == to == retrying，合并成一步，别刷屏也别重播动画
+  const trace =
+    last && isHoldOffline(step) && isHoldOffline(last)
+      ? current.trace.map((item, i) => (i === current.trace.length - 1 ? { ...item, at } : item))
+      : current.trace.concat(step)
+
+  const next: TaskRow = {
+    ...current,
+    status: data.to as TaskStatus,
+    trace,
+    score: data.score ?? current.score,
+    retry_count: data.retry_count ?? current.retry_count,
+    run_id: data.run_id ?? current.run_id,
+    assigned_agent: data.assigned_agent ?? current.assigned_agent,
+    assigned_device: data.assigned_device ?? current.assigned_device,
+    result: (data.result as TaskRow['result']) ?? current.result,
+  }
+  return rows.map((row, i) => (i === index ? next : row))
+}
+
 export function TasksPage() {
+  const [rows, setRows] = useState<TaskRow[]>(tasks)
   const [picked, setPicked] = useState<TaskStatus[]>([])
   const [type, setType] = useState<(typeof taskTypes)[number]['id']>('all')
   const [range, setRange] = useState<(typeof timeOptions)[number]['id']>('all')
@@ -30,22 +111,32 @@ export function TasksPage() {
   const [pageSize, setPageSize] = useState(10)
   const [jump, setJump] = useState('')
   const [menu, setMenu] = useState<{ kind: 'status' | 'time'; top: number; left: number } | null>(null)
-  const [open, setOpen] = useState<TaskRow | null>(null)
+  const [openId, setOpenId] = useState<string | null>(null)
 
-  const rows = useMemo(() => {
+  // 调度器的 task_status 是轨迹唯一数据源（后端没有 task_events 表，刷新后本地累积会丢）
+  useEffect(() => {
+    const off = dashboardSocket.on<TaskStatusEventDto>('task_status', (data, message) => {
+      if (!data?.task_no) return
+      setRows((current) => applyEvent(current, data, eventTime(data, message)))
+    })
+    return off
+  }, [])
+
+  const view = useMemo(() => {
     const text = query.trim().toLowerCase()
-    return tasks.filter((task) => {
+    return rows.filter((task) => {
       if (picked.length > 0 && !picked.includes(task.status)) return false
       if (type !== 'all' && task.type !== type) return false
       if (!inRange(task.created, range)) return false
       if (!text) return true
       return task.id.toLowerCase().includes(text) || task.target.toLowerCase().includes(text)
     })
-  }, [picked, type, range, query])
+  }, [rows, picked, type, range, query])
 
-  const pageCount = Math.max(1, Math.ceil(rows.length / pageSize))
+  const pageCount = Math.max(1, Math.ceil(view.length / pageSize))
   const current = Math.min(page, pageCount)
-  const view = rows.slice((current - 1) * pageSize, current * pageSize)
+  const paged = view.slice((current - 1) * pageSize, current * pageSize)
+  const open = openId ? (rows.find((row) => row.id === openId) ?? null) : null
 
   useEffect(() => {
     setPage(1)
@@ -129,35 +220,35 @@ export function TasksPage() {
               </tr>
             </thead>
             <tbody>
-              {view.length === 0 ? (
+              {paged.length === 0 ? (
                 <tr>
                   <td colSpan={9} className="px-5 py-16 text-center text-xs leading-normal text-mute">
                     这个筛选下面没有任务。
                   </td>
                 </tr>
               ) : (
-                view.map((task) => (
+                paged.map((task) => (
                   <tr
                     key={task.id}
-                    className={`cursor-pointer border-b border-[#F2F3F5] last:border-b-0 hover:bg-[#F7F8FA] ${open?.id === task.id ? 'bg-panel2' : ''}`}
-                    onClick={() => setOpen(task)}
+                    className={`cursor-pointer border-b border-[#F2F3F5] last:border-b-0 hover:bg-[#F7F8FA] ${openId === task.id ? 'bg-panel2' : ''}`}
+                    onClick={() => setOpenId(task.id)}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter' || event.key === ' ') {
                         event.preventDefault()
-                        setOpen(task)
+                        setOpenId(task.id)
                       }
                     }}
                     tabIndex={0}
                   >
                     <td className="num px-5 py-3.5 text-tea">{task.id}</td>
-                    <td className="px-4 py-3.5">{taskTypes.find((item) => item.id === task.type)?.label}</td>
+                    <td className="px-4 py-3.5">{taskTypes.find((item) => item.id === task.type)?.label ?? task.type}</td>
                     <td className="px-4 py-3.5 text-dim">{task.target}</td>
                     <td className="num px-4 py-3.5">{task.priority}</td>
-                    <td className="num px-4 py-3.5">{task.score.toFixed(2)}</td>
+                    <td className="num px-4 py-3.5">{task.score === null ? '—' : task.score.toFixed(2)}</td>
                     <td className="px-4 py-3.5">
-                      <StatusBadge status={task.status} />
+                      <StatusBadge task={task} />
                     </td>
-                    <td className="num px-4 py-3.5">{task.retries}</td>
+                    <td className="num px-4 py-3.5">{task.retry_count}</td>
                     <td className="px-4 py-3.5">{task.elapsed}</td>
                     <td className="num px-4 py-3.5 text-dim">{formatClock(task.created)}</td>
                   </tr>
@@ -167,7 +258,7 @@ export function TasksPage() {
           </table>
         </div>
         <footer className="flex h-14 shrink-0 items-center justify-between gap-3 border-t border-[#EEF0F3] px-5 text-sm text-dim">
-          <span>共 {rows.length} 条</span>
+          <span>共 {view.length} 条</span>
           <div className="flex items-center gap-2">
             <select
               aria-label="每页条数"
@@ -232,7 +323,7 @@ export function TasksPage() {
               ))}
         </FilterMenu>
       ) : null}
-      {open ? <TraceDrawer task={open} onClose={() => setOpen(null)} /> : null}
+      {open ? <TraceDrawer task={open} onClose={() => setOpenId(null)} /> : null}
     </PageFrame>
   )
 }
@@ -320,12 +411,38 @@ function PagerButton({
   )
 }
 
-function StatusBadge({ status }: { status: TaskStatus }) {
-  const meta = taskStatusMeta[status]
+function StatusBadge({ task }: { task: Pick<TaskRow, 'status' | 'result'> }) {
+  const meta = badgeFor(task)
   return <span className={`inline-flex h-6 items-center rounded-btn px-2 text-xs leading-none ${meta.className}`}>{meta.label}</span>
 }
 
+/** 一步 = 一条状态边：绘制 `from → to`，reason 只做小字说明 */
+function TraceStep({ step }: { step: TaskTrace }) {
+  const hold = isHoldOffline(step)
+  return (
+    <span className="flex flex-wrap items-center gap-1.5">
+      {step.from ? (
+        <>
+          <StatusBadge task={{ status: step.from, result: null }} />
+          <span className="text-xs text-mute" aria-hidden="true">
+            →
+          </span>
+        </>
+      ) : null}
+      <StatusBadge task={{ status: step.to, result: null }} />
+      {hold ? (
+        <span className="inline-flex h-6 items-center rounded-btn bg-[#F7F8FA] px-2 text-xs leading-none text-mute">
+          设备离线，挂着等
+        </span>
+      ) : null}
+      {step.reason ? <span className="text-xs leading-none text-mute">{reasonText(step.reason)}</span> : null}
+      {step.note ? <span className="text-xs leading-none text-mute">{step.note}</span> : null}
+    </span>
+  )
+}
+
 function TraceDrawer({ task, onClose }: { task: TaskRow; onClose: () => void }) {
+  const badge = badgeFor(task)
   return (
     <div className="fixed inset-0 z-40 flex justify-end">
       <button type="button" className="absolute inset-0 bg-paper/30" aria-label="关闭轨迹" onClick={onClose} />
@@ -334,6 +451,9 @@ function TraceDrawer({ task, onClose }: { task: TaskRow; onClose: () => void }) 
           <div>
             <h2 className="num text-paper">{task.id}</h2>
             <p className="mt-1 text-sm leading-normal text-mute">{task.target}</p>
+            <span className={`mt-2 inline-flex h-6 items-center rounded-btn px-2 text-xs leading-none ${badge.className}`}>
+              {badge.label}
+            </span>
           </div>
           <button type="button" className="btn btn-ghost" onClick={onClose}>
             关闭
@@ -341,20 +461,39 @@ function TraceDrawer({ task, onClose }: { task: TaskRow; onClose: () => void }) 
         </header>
         <div className="flex-1 overflow-auto px-5 py-4">
           <h3 className="text-paper">状态轨迹</h3>
+          <p className="mt-1 text-xs leading-normal text-mute">每一步都来自调度器的 task_status 事件，按 from → to 原样展示。</p>
           <ol className="mt-4 grid gap-0">
             {task.trace.map((step, index) => (
-              <li key={`${step.status}-${step.at}`} className="grid grid-cols-[16px_minmax(0,1fr)] gap-3">
+              <li key={`${step.from ?? 'new'}-${step.to}-${step.at}-${index}`} className="grid grid-cols-[16px_minmax(0,1fr)] gap-3">
                 <span className="flex flex-col items-center">
-                  <span className="mt-1 h-2.5 w-2.5 rounded-full bg-tea" />
+                  <span className={`mt-1 h-2.5 w-2.5 rounded-full ${isHoldOffline(step) ? 'bg-[#C9CDD4]' : 'bg-tea'}`} />
                   {index < task.trace.length - 1 ? <span className="w-px flex-1 bg-line" /> : null}
                 </span>
                 <span className="pb-4">
-                  <StatusBadge status={step.status} />
+                  <TraceStep step={step} />
                   <time className="num mt-2 block text-xs leading-none text-mute">{formatClock(step.at)}</time>
                 </span>
               </li>
             ))}
           </ol>
+          {task.result ? (
+            <>
+              <h3 className="mt-2 text-paper">结果</h3>
+              {task.result.rejected === 'breaker_open' ? (
+                <p className="mt-2 rounded-btn bg-[#3F1212] px-3 py-2 text-sm leading-normal text-[#F8D0D0]">
+                  熔断拒绝：冷却剩余 {task.result.retry_after_s ?? '—'}s，冷却结束前不再派发。
+                </p>
+              ) : null}
+              {task.result.verdict === 'needs_human' ? (
+                <p className="mt-2 rounded-btn bg-[#F3E8FF] px-3 py-2 text-sm leading-normal text-[#6D28D9]">
+                  验证结论：置信度低于 60%，已转人工判定（枚举补齐前落 failed + verdict）。
+                </p>
+              ) : null}
+              <pre className="num mt-2 overflow-auto rounded-lg bg-[#F7F8FA] p-3 text-xs leading-normal text-dim">
+                {JSON.stringify(task.result, null, 2)}
+              </pre>
+            </>
+          ) : null}
         </div>
       </aside>
     </div>

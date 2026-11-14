@@ -40,7 +40,11 @@ export type SensorHistoryDto = {
   points: { ts: string; value: number }[]
 }
 
-/** 后端 tasks.status 9 态（PRD 6.6 第 397 行） */
+/**
+ * 后端 tasks.status：`models/tasks.py` 枚举 9 态 + needs_human
+ * （needs_human 在枚举补齐前会以 failed + result.verdict 出现）。
+ * 没有 queued / completed / waiting_tool / tool_done。
+ */
 export type TaskStatusDto =
   | 'pending'
   | 'dispatched'
@@ -50,10 +54,20 @@ export type TaskStatusDto =
   | 'timeout'
   | 'retrying'
   | 'dead'
+  | 'needs_human'
   | 'canceled'
 
 /** 后端 tasks.type（PRD 6.6） */
 export type TaskTypeDto = 'agent_call' | 'device_cmd' | 'verify' | 'report' | 'selfloop'
+
+export type TaskResultDto = {
+  /** 熔断拒绝：breaker_open */
+  rejected?: string
+  retry_after_s?: number
+  /** 验证结论：success / failed / needs_human */
+  verdict?: string
+  [key: string]: unknown
+}
 
 /** GET /api/tasks 单行 */
 export type TaskDto = {
@@ -70,9 +84,65 @@ export type TaskDto = {
   retry_count: number
   timeout_s: number | null
   deadline_at: string | null
-  result: Record<string, unknown> | null
+  result: TaskResultDto | null
   created_at: string | null
   updated_at: string | null
+}
+
+/**
+ * WS `task_status`（contract 第 9 节）：调度器每次改状态推一条。
+ * 轨迹直接画 `from → to`，前端不自己推状态机。
+ */
+export type TaskStatusEventDto = {
+  task_no: string
+  run_id?: number | null
+  from: TaskStatusDto | null
+  to: TaskStatusDto
+  reason?: string
+  retry_count?: number
+  score?: number | null
+  assigned_agent?: string | null
+  assigned_device?: string | null
+  result?: TaskResultDto | null
+  ts?: string | number
+}
+
+/**
+ * 验证结果（contract 第 10 节）—— 量纲钉死，别混：
+ * achievement / gap / confidence 是 **0-100**；confidence_detail.* 是 **0-1** 原始分。
+ */
+export type VerificationDto = {
+  task_no: string
+  verification_id: number
+  verdict: 'success' | 'failed' | 'needs_human'
+  /** 0-100（%） */
+  achievement: number
+  /** 0-100（%） */
+  gap: number
+  over_irrigated: boolean
+  /** 0-100，60 为转人工阈值 */
+  confidence: number
+  measured: number
+  baseline: number
+  round_no: number
+  /** 三路原始分，0-1，权重 0.5 / 0.3 / 0.2 */
+  confidence_detail: {
+    data_quality: number
+    rule_cross: number
+    consistency: number
+    reasons?: string[]
+  }
+  correction: { strategy: string; duration_s: number; times: number; interval_s: number } | null
+  note?: string
+}
+
+/** 知识库命中（contract 第 8 节）：score 0-1 原样显示，空数组 = 未检索到 */
+export type KnowledgeHitDto = {
+  title: string
+  chunk_text: string
+  score: number
+  doc_id: number
+  chunk_index: number
 }
 
 /** 统一分页封装（backend/app/api/_common.py） */
@@ -139,6 +209,30 @@ export type WorkflowDto = {
   enabled: boolean
   dag_json: DagJson
   updated_at: string | null
+}
+
+/** GET /api/runs/{run_id} 里的 agent_messages */
+export type AgentMessageDto = {
+  id: number
+  run_id?: number | null
+  agent_key: string
+  role: 'user' | 'assistant' | 'tool' | 'system' | string
+  content: string
+  /** [{id, name, arguments, status, result}]，权限拒绝是 status: "denied" */
+  tool_calls?: unknown
+  /** 知识库命中数组，空数组 = 未检索到（正常结果） */
+  citations?: KnowledgeHitDto[] | unknown
+  tokens_in?: number | null
+  tokens_out?: number | null
+  latency_ms?: number | null
+  created_at: string | null
+}
+
+/** GET /api/runs/{run_id} */
+export type RunDetailDto = {
+  run: WorkflowRunDto
+  tasks: TaskDto[]
+  messages: AgentMessageDto[]
 }
 
 /** GET /api/runs */

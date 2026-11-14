@@ -4,6 +4,7 @@ import { Markdown } from '../components/Markdown'
 import { PageFrame } from '../components/PageFrame'
 import { ReportTrend } from '../components/ReportTrend'
 import { dailyMarkdown, patrolRuns, type PatrolRound } from '../data/patrolReport'
+import { CONFIDENCE_WEIGHTS, NEEDS_HUMAN_THRESHOLD, pct, raw01, weightedConfidence } from '../lib/units'
 
 export function ReportPage() {
   const [runId, setRunId] = useState(patrolRuns[0].id)
@@ -34,7 +35,7 @@ export function ReportPage() {
             </select>
           </label>
           <p className="text-sm text-mute">
-            {run.outcome}。第 {latest.round} 轮复测 {latest.measured.toFixed(1)}%。
+            {run.outcome}。第 {latest.round} 轮复测 {pct(latest.measured, 1)}，置信度 {pct(latest.confidence)}。
           </p>
         </div>
 
@@ -109,7 +110,8 @@ function RateRing({ rate, color }: { rate: number; color: string }) {
   const length = 2 * Math.PI * radius
 
   return (
-    <div className="relative h-[188px] w-[188px] shrink-0" aria-label={`达成率 ${rate.toFixed(2)}%`}>
+    // rate 是 0-100（contract 第 10 节 achievement 量纲），别再 ×100
+    <div className="relative h-[188px] w-[188px] shrink-0" aria-label={`达成率 ${pct(rate)}`}>
       <svg viewBox={`0 0 ${size} ${size}`} className="h-full w-full" aria-hidden="true">
         <circle cx={center} cy={center} r={radius} fill="none" stroke="#E7EEE9" strokeWidth={stroke} />
         <circle
@@ -126,7 +128,7 @@ function RateRing({ rate, color }: { rate: number; color: string }) {
       </svg>
       <div className="pointer-events-none absolute inset-0 grid place-items-center text-center">
         <div>
-          <span className="num block text-[28px] font-semibold leading-none text-paper">{(rate * progress).toFixed(2)}%</span>
+          <span className="num block text-[28px] font-semibold leading-none text-paper">{pct(rate * progress)}</span>
           <span className="mt-1 block text-xs leading-none text-mute">达成率</span>
         </div>
       </div>
@@ -135,7 +137,8 @@ function RateRing({ rate, color }: { rate: number; color: string }) {
 }
 
 function RoundBlock({ round }: { round: PatrolRound }) {
-  const handedOff = round.confidence < 60
+  // 置信度是 0-100，阈值 60 直接比，别拿 0.6 比
+  const handedOff = round.confidence < NEEDS_HUMAN_THRESHOLD
   const closed = round.rate >= 60
   const result = handedOff ? '转人工' : closed ? '闭环' : '未达标'
   const resultClass = handedOff ? 'bg-[#F3E8FF] text-[#6D28D9]' : closed ? 'bg-panel2 text-tea' : 'bg-[#FFF4CC] text-[#8A6414]'
@@ -149,11 +152,11 @@ function RoundBlock({ round }: { round: PatrolRound }) {
           <dl className="mt-4 grid gap-3 sm:grid-cols-2">
             <div className="rounded-xl bg-panel px-3 py-3">
               <dt className="text-xs leading-none text-mute">基线</dt>
-              <dd className="num mt-1 text-base text-paper">{round.baseline.toFixed(1)}%</dd>
+              <dd className="num mt-1 text-base text-paper">{pct(round.baseline, 1)}</dd>
             </div>
             <div className="rounded-xl bg-panel px-3 py-3">
               <dt className="text-xs leading-none text-mute">复测</dt>
-              <dd className="num mt-1 text-base text-paper">{round.measured.toFixed(1)}%</dd>
+              <dd className="num mt-1 text-base text-paper">{pct(round.measured, 1)}</dd>
             </div>
           </dl>
           <div className="mt-3 overflow-hidden rounded-xl border border-line bg-panel">
@@ -168,6 +171,12 @@ function RoundBlock({ round }: { round: PatrolRound }) {
                   <td className="border-b border-line px-3 py-2.5 text-paper">{round.correction}</td>
                 </tr>
                 <tr>
+                  <th className="w-24 border-b border-line bg-[#F7F8FA] px-3 py-2.5 text-left text-sm font-normal text-dim">置信度构成</th>
+                  <td className="border-b border-line px-3 py-2.5">
+                    <ConfidenceBreakdown round={round} />
+                  </td>
+                </tr>
+                <tr>
                   <th className="w-24 bg-[#F7F8FA] px-3 py-2.5 text-left text-sm font-normal text-dim">结果</th>
                   <td className="px-3 py-2.5">
                     <span className={`inline-flex h-6 items-center rounded-btn px-2 text-xs leading-none ${resultClass}`}>{result}</span>
@@ -180,5 +189,43 @@ function RoundBlock({ round }: { round: PatrolRound }) {
         <RateRing rate={round.rate} color={ringColor} />
       </div>
     </section>
+  )
+}
+
+/**
+ * 置信度构成：三路原始分是 0-1，总分是 0-100，分两列显示，中间用加权说明隔开。
+ * 后端给的 confidence 与加权值理论一致（允许 0.1 的四舍五入差）。
+ */
+function ConfidenceBreakdown({ round }: { round: PatrolRound }) {
+  const detail = round.detail
+  const weighted = weightedConfidence(detail)
+  const rows = [
+    { key: 'data_quality', label: '数据质量', weight: CONFIDENCE_WEIGHTS.data_quality },
+    { key: 'rule_cross', label: '规则交叉', weight: CONFIDENCE_WEIGHTS.rule_cross },
+    { key: 'consistency', label: '一致性', weight: CONFIDENCE_WEIGHTS.consistency },
+  ] as const
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+        {rows.map((row) => (
+          <span key={row.key} className="inline-flex items-baseline gap-1.5">
+            <span className="text-xs leading-none text-dim">{row.label}</span>
+            <span className="num text-sm text-paper">{raw01(detail[row.key])}</span>
+            <span className="num text-xs leading-none text-mute">×{row.weight}</span>
+          </span>
+        ))}
+      </div>
+      <p className="num mt-2 text-xs leading-normal text-mute">
+        加权 {pct(weighted, 1)}（对应 confidence {pct(round.confidence)}，阈值 {NEEDS_HUMAN_THRESHOLD}）
+      </p>
+      {detail.reasons?.length ? (
+        <ul className="mt-2 list-disc pl-4 text-sm leading-normal text-paper">
+          {detail.reasons.map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
   )
 }

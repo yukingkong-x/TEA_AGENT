@@ -1,3 +1,5 @@
+import type { ConfidenceDetail } from '../lib/units'
+
 const LOW = 55
 
 function achievement(baseline: number, measured: number) {
@@ -10,8 +12,12 @@ export type PatrolRound = {
   round: number
   baseline: number
   measured: number
+  /** 达成率，0-100（%） */
   rate: number
+  /** 置信度，0-100；60 是转人工阈值 */
   confidence: number
+  /** 三路原始分，0-1（contract 第 10 节），只用于展示构成，别当百分比 */
+  detail: ConfidenceDetail
   diagnosis: string
   correction: string
 }
@@ -27,7 +33,14 @@ export const patrolRounds: PatrolRound[] = [
     baseline: round1Baseline,
     measured: round1Measured,
     rate: achievement(round1Baseline, round1Measured),
-    confidence: 100,
+    // 三路原始分加权 1.0*0.5 + 1.0*0.3 + 0.5*0.2 = 0.90 → 90.0
+    confidence: 90,
+    detail: {
+      data_quality: 1,
+      rule_cross: 1,
+      consistency: 0.5,
+      reasons: ['复测读数偏低 12.3%，与近 24h 均值偏差 2.4σ'],
+    },
     diagnosis: '缺口 10.0%，达成率低于 60%。',
     correction: `补灌 ${10 + gap} 秒`,
   },
@@ -37,6 +50,7 @@ export const patrolRounds: PatrolRound[] = [
     measured: round2Measured,
     rate: achievement(round1Measured, round2Measured),
     confidence: 100,
+    detail: { data_quality: 1, rule_cross: 1, consistency: 1 },
     diagnosis: '落在目标 55%–65%。',
     correction: '不必再浇',
   },
@@ -69,6 +83,12 @@ export const patrolRuns: PatrolRun[] = [
         measured: jitterMeasured,
         rate: achievement(round1Baseline, jitterMeasured),
         confidence: 50,
+        detail: {
+          data_quality: 0.4,
+          rule_cross: 1,
+          consistency: 0.2,
+          reasons: ['三次读数极差超过 5%', '与近 24h 均值偏差 3.1σ'],
+        },
         diagnosis: '三次读数极差超过 5%，置信度低于 60%。',
         correction: '暂停闭环，转人工',
       },

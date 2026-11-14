@@ -4,9 +4,17 @@ export type ToolCall = {
   result: Record<string, unknown>
 }
 
+/**
+ * 知识库命中（contract 第 8 节）：字段名与 `/api/knowledge/search` 返回完全一致。
+ * score 是 0-1 的稀疏余弦相似度，**原样显示 0.23，不要转成百分比**；
+ * 空数组 = 未检索到，是正常结果。
+ */
 export type Citation = {
-  id: string
-  excerpt: string
+  title: string
+  chunk_text: string
+  score: number
+  doc_id: number
+  chunk_index: number
 }
 
 export type ChatMessage = {
@@ -20,8 +28,11 @@ export type ChatMessage = {
 }
 
 const teaNote: Citation = {
-  id: '1',
-  excerpt: '春茶期土壤湿度宜保持在 55%–65%。低于 40% 属于缺水，补灌与植保无冲突。',
+  title: '春茶期灌溉要点.md',
+  chunk_text: '春茶期土壤湿度宜保持在 55%–65%。低于 40% 属于缺水，补灌与植保无冲突；雨后 6 小时内不宜再灌。',
+  score: 0.2306,
+  doc_id: 2,
+  chunk_index: 0,
 }
 
 export const chatThreads: Record<string, ChatMessage[]> = {
@@ -163,6 +174,21 @@ export const chatThreads: Record<string, ChatMessage[]> = {
     },
   ],
   'run-1002': [
+    {
+      // 空 citations 的样例：知识库未命中是正常结果，前端要显示空态而不是报错
+      id: 'm-1002-0',
+      at: '19:20:08',
+      agentKey: 'pest',
+      content: '【植保核查】知识库中未检索到相关内容。风险：无法判断。建议：转人工复核。',
+      citations: [],
+      calls: [
+        {
+          name: 'query_knowledge',
+          args: { question: '读数抖动 三次极差 5% 是否需要补灌' },
+          result: { hits: 0 },
+        },
+      ],
+    },
     {
       id: 'j1',
       at: '21:20:06',
