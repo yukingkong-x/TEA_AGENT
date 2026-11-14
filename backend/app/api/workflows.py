@@ -14,6 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import seams
+from ..core import node_records
 from ..db import get_db, session_scope
 from ..models.agent_messages import AgentMessage
 from ..models.agents import Agent
@@ -172,7 +173,7 @@ def list_runs(
     return page_payload([run_to_dict(r) for r in rows], total, page, page_size)
 
 
-@router.get("/runs/{run_id}", summary="执行详情（含任务轨迹与 Agent 消息）")
+@router.get("/runs/{run_id}", summary="执行详情（含任务轨迹、Agent 消息与节点耗时）")
 def get_run(run_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
     run = db.get(WorkflowRun, run_id)
     ensure_found(run, f"执行实例 {run_id}")
@@ -180,6 +181,9 @@ def get_run(run_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
     messages = db.scalars(
         select(AgentMessage).where(AgentMessage.run_id == run_id).order_by(AgentMessage.id)
     ).all()
+    # 节点耗时表：表还没被引擎写过时是空数组，前端按「无节点数据」降级即可，
+    # 不给 404——run 本身是存在的，只是没有节点级明细（历史 run 补不出来）。
+    nodes = node_records.load_run_nodes(run_id)
     return {
         "run": run_to_dict(run),
         "tasks": [task_to_dict(t) for t in tasks],
@@ -198,4 +202,14 @@ def get_run(run_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
             }
             for m in messages
         ],
+        "nodes": nodes,
+        "node_summary": node_records.summarize(nodes),
     }
+
+
+@router.get("/runs/{run_id}/nodes", summary="节点级耗时（PRD 9.1 报告时间线）")
+def get_run_nodes(run_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
+    run = db.get(WorkflowRun, run_id)
+    ensure_found(run, f"执行实例 {run_id}")
+    nodes = node_records.load_run_nodes(run_id)
+    return {"run_id": run_id, "items": nodes, "summary": node_records.summarize(nodes)}
