@@ -10,6 +10,7 @@
 
 | 日期 | 改了哪条 | 谁同意的 |
 | ---- | -------- | -------- |
+| 2026-11-14 | 新增调度事件 `task_status`(WS):`{task_no,run_id,from,to,reason,retry_count,score,assigned_agent,assigned_device}`,另 `result.rejected=breaker_open`。**`tasks.status` 枚举缺 `needs_human`**(PRD 10.2/11.3 要),补之前前端按 `result_json.verdict` 判转人工徽章 | 队长定,B 补枚举 |
 | 2026-11-14 | 知识库检索口径:`search` 返回 `{title, chunk_text, score, doc_id, chunk_index}`,`score` 为稀疏余弦(0~1),有 **0.03 噪声地板**,空数组=未检索到属正常结果;`ingest` 返回体增 `backend`(`chroma+local`/`local`)与 `chars`,原 `chunk_count`/`chroma_ids` 不变 | 队长定,A 照此渲染引用 |
 | 2026-11-14 | 新增 `app.knowledge.loader.delete(doc_id)`:`DELETE /api/knowledge/{id}` 目前只删 MySQL 记录,向量库会留孤儿块(检索仍命中已删文档)。请 B 在删除接口里补一行 `seams`/`loader.delete` 调用 | 队长提,B 执行 |
 | 2026-11-14 | `GET /api/devices` 默认行为回退:缺省 `is_mock=None` 返回**全量**,只有显式 `true`/`false` 才过滤(`all` 等价缺省)。理由:演示现场 Mock 与真机可能同时在跑,按 mode 过滤会丢信息;契约默认值不许悄悄变 | 队长定,B 执行 |
