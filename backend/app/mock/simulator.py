@@ -143,7 +143,7 @@ class Simulator:
 
         self._register_devices()
         self._start_cmd_client()
-        mqtt_client.set_local_dispatcher(self._on_local_dispatch)
+        mqtt_client.register_local_dispatcher(self._on_local_dispatch)
 
         self._threads = [
             threading.Thread(target=self._run_field, name="sim-field", daemon=True),
@@ -159,7 +159,7 @@ class Simulator:
             return
         self._running = False
         self._stop.set()
-        mqtt_client.set_local_dispatcher(None)
+        mqtt_client.unregister_local_dispatcher(self._on_local_dispatch)
         if self._client is not None:
             try:
                 self._client.disconnect()
@@ -254,7 +254,7 @@ class Simulator:
             logger.info("【模拟设备】{} 浇水完成 {}s，理论提升 {:.2f}%", device_id, duration, gained)
 
         elif action == "read_now":
-            self._publish_once(device_id, force=True)
+            self._publish_once(device_id)
             self._send_ack(device_id, msg_id, task_no, "finished", "done", {"executed_s": 0})
 
         elif action == "relay_off":
@@ -330,7 +330,7 @@ class Simulator:
         }
         mqtt_client.publish(STATUS_TOPIC.format(device_id=device_id), payload)
 
-    def _publish_once(self, device_id: str, metrics_fn=None, force: bool = False) -> None:
+    def _publish_once(self, device_id: str, metrics_fn=None) -> None:
         fn = metrics_fn or {
             DEV_FIELD: self._field_metrics,
             DEV_SOIL: self._soil_metrics,
@@ -390,17 +390,13 @@ class Simulator:
         return until > time.time()
 
     def _ack_suppressed(self) -> bool:
-        state = self.faults["ack_timeout"]
-        now = time.time()
-        if state.get("until", 0) > now:
-            return True
-        try:
-            raw = get_redis().get(f"tea:fault:ack_timeout:{DEV_ACT}")
-            if raw and float(raw) > now:
-                return True
-        except Exception:  # pragma: no cover
-            pass
-        return False
+        """ack_timeout 注入窗口内吞掉 finished 回执。
+
+        单一事实源是本进程的 `faults["ack_timeout"]["until"]`（由 inject/clear 维护）；
+        以前还读一个 Redis 键做"跨进程"兜底，但那个键的另一半已经删掉了，
+        留着只会让后来的人以为有两条注入通道。
+        """
+        return self.faults["ack_timeout"].get("until", 0) > time.time()
 
     def inject(self, fault: str, **kwargs) -> dict[str, Any]:
         """故障注入入口（设置页 / 命令行 / api/devices/fault 都走这里）。"""
@@ -435,10 +431,6 @@ class Simulator:
                 self.offline_until.clear()
             if fault in (None, "ack_timeout"):
                 self.faults["ack_timeout"]["until"] = 0
-                try:
-                    get_redis().delete(f"tea:fault:ack_timeout:{DEV_ACT}")
-                except Exception:  # pragma: no cover
-                    pass
             if fault in (None, "dry_soil"):
                 self.faults["dry_soil"] = False
             if fault in (None, "stuck_moisture"):

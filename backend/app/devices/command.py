@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime, timedelta
 from typing import Any, Callable
 
 from loguru import logger
@@ -116,7 +115,14 @@ def send_cmd(
     else:
         task.status = "dispatched"
         task.assigned_device = device_id
-    db.flush()
+
+    # 必须先 commit 再 publish，不能只 flush：
+    # 模拟器的 ack 是毫秒级回来的，它在 paho 线程用**另一个 session** 查 Task；
+    # 停在 flush 的话 INSERT 还在未提交事务里，别的会话看不见 → task=None
+    # → handle_ack 只广播不落库 → 任务永远卡在 dispatched，超时后还会补一条假的
+    # 「指令超时」报警，_finish_handlers 再拿幽灵 task_no 去触发验证。
+    # 提交责任收在这里；调用方之后自己再 commit 一次是无害的（幂等提交）。
+    db.commit()
 
     msg_id = ids.new_msg_id()
     payload = {
@@ -295,24 +301,3 @@ def sweep_ack_timeouts(db: Session) -> list[dict[str, Any]]:
                     logger.exception("超时钩子执行失败：{}", exc)
         get_redis().delete(key)
     return overdue
-
-
-def ack_timeout_demo(device_id: str, seconds: int = 60) -> None:
-    """故障注入用：让某设备在接下来 N 秒内的指令必定超时。"""
-    try:
-        get_redis().set(f"tea:fault:ack_timeout:{device_id}", int(time.time()) + seconds, ex=seconds + 5)
-    except Exception:  # pragma: no cover
-        pass
-
-
-def is_ack_suppressed(device_id: str) -> bool:
-    """设备侧模拟器调用：判断当前是否处于 ack_timeout 注入窗口。"""
-    try:
-        until = get_redis().get(f"tea:fault:ack_timeout:{device_id}")
-    except Exception:  # pragma: no cover
-        return False
-    return bool(until) and float(until) > time.time()
-
-
-def build_manual_deadline(seconds: int) -> datetime:
-    return datetime.now() + timedelta(seconds=seconds)

@@ -104,21 +104,49 @@ def validate_dag(dag: dict[str, Any], known_agents: Iterable[str] | None = None)
             walk(node_id, [])
 
     # 可达性（从 start 出发）
+    #
+    # loop 节点的特殊语义（PRD 9.1 Self-Loop）：它是「环绕 body_next 那个节点」的结构标记，
+    # 本身可以没有入边——PRD 原文 n11.next=["n13"]、n11b.next=["n13"]，没有任何节点指向 n11b。
+    # 所以判定规则是：body_next 可达 ⇒ loop 视为可达，且把 loop 的 next 并回图里继续扩散
+    # （否则只挂在 loop 出口上的节点会被误判不可达）。非 loop 节点照旧必须从 start 走得到。
     if starts:
         seen: set[str] = set()
         queue = [starts[0]]
-        while queue:
-            cur = queue.pop()
-            if cur in seen or cur not in by_id:
-                continue
-            seen.add(cur)
-            node = by_id[cur]
-            queue.extend(_children(node))
-            body = node.get("body_next")
-            if isinstance(body, str):
-                queue.append(body)
+        while True:
+            while queue:
+                cur = queue.pop()
+                if cur in seen or cur not in by_id:
+                    continue
+                seen.add(cur)
+                node = by_id[cur]
+                queue.extend(_children(node))
+                body = node.get("body_next")
+                if isinstance(body, str):
+                    queue.append(body)
+            # loop 继承 body 的可达性，迭代到不动点（支持 loop 套 loop）
+            promoted = [
+                node_id
+                for node_id in ids
+                if node_id not in seen
+                and by_id[node_id].get("type") == "loop"
+                and isinstance(by_id[node_id].get("body_next"), str)
+                and by_id[node_id]["body_next"] in seen
+            ]
+            if not promoted:
+                break
+            queue.extend(promoted)
+
         unreachable = [i for i in ids if i not in seen]
         if unreachable:
-            errors.append(f"以下节点从 start 不可达：{unreachable}")
+            # 单独点出「谁都不指向它」的孤立节点：画布上漏连线是最常见的 400 原因
+            inbound = {c for node in by_id.values() for c in _children(node)}
+            inbound |= {
+                node["body_next"] for node in by_id.values() if isinstance(node.get("body_next"), str)
+            }
+            orphans = [i for i in unreachable if i not in inbound]
+            msg = f"以下节点从 start 不可达：{unreachable}"
+            if orphans:
+                msg += f"；其中 {orphans} 没有任何节点指向它（画布上漏了连线）"
+            errors.append(msg)
 
     return errors

@@ -59,8 +59,11 @@ def ensure_device(
         role=role or _guess_role(device_id),
         location=location,
         is_mock=is_mock,
-        online=True,
-        last_seen=datetime.now(),
+        # 不写 online=True：device_id 打错一个字，下发一次指令就会凭空登记一台"在线"设备，
+        # 120s 后再由 sweep 补一条假的离线报警，大屏上谁也说不清这台是哪来的。
+        # 新设备一律先当离线，等它自己发心跳（touch）再转在线。
+        online=False,
+        last_seen=None,
         config_json=config,
     )
     db.add(device)
@@ -120,9 +123,45 @@ def state_dict(device: Device) -> dict[str, Any]:
     }
 
 
-def list_states(db: Session) -> list[dict[str, Any]]:
-    devices = db.scalars(select(Device).order_by(Device.id)).all()
-    return [state_dict(d) for d in devices]
+def list_states(db: Session, is_mock: bool | None = None, include_all: bool = False) -> list[dict[str, Any]]:
+    """设备列表。
+
+    is_mock=None（缺省）：只返回**当前运行模式**那一组——
+    Mock 演示时大屏不该挂 3 台永远灰着的真设备，Real 模式也不该看到假设备。
+    is_mock=True/False：显式只要 Mock / 只要真机（设置页、联调排查用）。
+    include_all=True：不过滤，给「设备管理」这种需要看到全量的页面。
+    """
+    stmt = select(Device).order_by(Device.id)
+    if not include_all:
+        if is_mock is None:
+            from ..core.runtime_settings import get_mode
+
+            stmt = stmt.where(Device.is_mock.is_(get_mode() == "mock"))
+        else:
+            stmt = stmt.where(Device.is_mock.is_(is_mock))
+    return [state_dict(d) for d in db.scalars(stmt).all()]
+
+
+def deactivate_mock_devices(db: Session) -> int:
+    """切到 Real 模式时停用 mock-* 设备：置离线 + 清 last_seen 与报警标记。
+
+    不做这一步，模拟器一停，这 3 台假设备会在 120s 后连发 3 条"设备离线"报警，
+    现场演示切到真机时大屏突然冒出 3 条假警报。
+    """
+    affected = 0
+    for device in db.scalars(select(Device).where(Device.is_mock.is_(True))).all():
+        device.online = False
+        device.last_seen = None
+        try:
+            get_redis().delete(Keys.device_last_seen(device.device_id))
+            get_redis().delete(Keys.device_alerted(device.device_id))
+        except Exception:  # pragma: no cover
+            pass
+        affected += 1
+    if affected:
+        db.flush()
+        logger.info("已停用 {} 台 Mock 设备（切 Real 模式，不再参与在线巡检）", affected)
+    return affected
 
 
 # ------------------------------------------------------------------ 离线巡检

@@ -81,9 +81,24 @@ def mqtt_stats() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------- 设备
-@router.get("", summary="设备列表（含在线三态）")
-def list_devices(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
-    return registry.list_states(db)
+@router.get("", summary="设备列表（含在线三态；缺省只返回当前模式那一组）")
+def list_devices(
+    is_mock: str | None = Query(
+        None,
+        description="true=只要 Mock / false=只要真机 / all=全量；缺省按当前 mode 过滤",
+    ),
+    db: Session = Depends(get_db),
+) -> list[dict[str, Any]]:
+    if is_mock is None:
+        return registry.list_states(db)
+    flag = is_mock.strip().lower()
+    if flag == "all":
+        return registry.list_states(db, include_all=True)
+    if flag in {"true", "1", "yes"}:
+        return registry.list_states(db, is_mock=True)
+    if flag in {"false", "0", "no"}:
+        return registry.list_states(db, is_mock=False)
+    raise HTTPException(status_code=400, detail="is_mock 只接受 true / false / all")
 
 
 @router.get("/{device_id}", summary="设备详情")
