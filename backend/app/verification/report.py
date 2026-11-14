@@ -128,10 +128,14 @@ def render_report(data: ReportData) -> str:
     # ── 诊断与修正(证据链的关键一段) ──
     heading("诊断与修正")
     add("")
-    corrections = [r for r in data.rounds if r.note and r.verdict in {"failed", "needs_human"}]
+    corrections = [r for r in data.rounds if r.verdict in {"failed", "needs_human"}]
     if corrections:
         for item in corrections:
-            add(f"- **第 {item.round_no} 轮**:缺口 {_fmt(item.gap)} → {item.note}")
+            # note 来自 feedback_logs 的诊断(缺口多少、按什么策略补灌);
+            # 取不到就按数字说清楚,不能因为少了句文案就把整段写成「无需修正」。
+            detail = item.note or (f"达成率 {_fmt(item.achievement)}%、缺口 {_fmt(item.gap)}%，"
+                                   f"已生成修正任务进入下一轮")
+            add(f"- **第 {item.round_no} 轮**：{detail}")
     else:
         # 别写成「首轮即达标」:达成率 94.85% 判 success 是因为过了 PRD 11.3 的 60% 线,
         # 不是已经命中目标区间。措辞得对得上数字。

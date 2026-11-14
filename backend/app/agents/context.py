@@ -104,3 +104,29 @@ def reset_current_task_no(token) -> None:
     CURRENT_TASK_NO.reset(token)
 
 
+# ── 本轮修正单的浇水时长 ──────────────────────────────────────────────
+# Self-Loop 第 2 轮:执行管家的上下文里还留着第 1 轮的「浇水 45 秒」(上游结论 +
+# 历史消息),它照抄下发,而修正单实际是 19.9s —— run #29 实测:任务载荷写 19.9、
+# 设备真浇 45 秒,达成率算得对、物理动作是错的,证据链在这里断掉。
+# 时长是引擎算出来的确定性事实,和任务号一样不该让模型复述。
+CURRENT_PUMP_DURATION = ContextVar("current_pump_duration", default=0.0)
+
+
+def current_pump_duration() -> float:
+    try:
+        return float(CURRENT_PUMP_DURATION.get() or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def set_pump_duration(duration: float):
+    try:
+        return CURRENT_PUMP_DURATION.set(float(duration or 0))
+    except (TypeError, ValueError):
+        return CURRENT_PUMP_DURATION.set(0.0)
+
+
+def reset_pump_duration(token) -> None:
+    CURRENT_PUMP_DURATION.reset(token)
+
+

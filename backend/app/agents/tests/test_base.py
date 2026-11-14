@@ -236,3 +236,34 @@ def test_irrigate_regex_does_not_fire_on_negative_wording():
     assert IRRIGATE_RE.search(decision_fallback(soil_moisture=38.5))
     assert not IRRIGATE_RE.search(decision_fallback(soil_moisture=62.0))
     assert not IRRIGATE_RE.search("本轮无需灌溉,墒情适宜")
+
+
+@pytest.mark.asyncio
+async def test_system_prompt_carries_current_task_no():
+    """本轮任务号写进 system:模型不用从上游正文里摘(摘到的是占位号更糟)。
+
+    2026-11-14 队友B:执行管家的 send_device_cmd 需要 task_no,靠模型复述不可靠。
+    平台把事实给全:工具层补参兜底 + system 里明说,双保险。
+    """
+    from app.agents.context import reset_current_task_no, set_current_task_no
+
+    runner = _runner("executor", [LLMResult(content="收到")])
+    token = set_current_task_no("task-20261114-0016")
+    try:
+        await runner.run(task="下发指令")
+    finally:
+        reset_current_task_no(token)
+
+    system = runner.llm.calls[0]["messages"][0]["content"]
+    assert "task-20261114-0016" in system
+    assert "[本轮任务号]" in system
+
+
+@pytest.mark.asyncio
+async def test_system_prompt_has_no_task_line_without_task_no():
+    """没有任务号的轮次(巡园/墒情)不该凭空多一行 —— 模型会以为有单要下。"""
+    runner = _runner("scout", [LLMResult(content="收到")])
+    await runner.run(task="巡园")
+
+    system = runner.llm.calls[0]["messages"][0]["content"]
+    assert "[本轮任务号]" not in system

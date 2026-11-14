@@ -33,7 +33,12 @@ from loguru import logger
 from app.workflow.dag import validate_dag
 from app.workflow.expression import ExpressionError, evaluate_bool
 
-DECISION_RE = re.compile(r"本轮决策[：:]\s*(irrigate|none|escalate)")
+# 决策口径从正文里提。真模型(run #26)写的是「本轮决策**为**irrigate」而不是
+# 「本轮决策:irrigate」—— 只认冒号会把一次浇水决策读成「没决策」,分流走 false
+# 分支去「无需作业归档」,画面显示一切正常、实际一滴水没浇。所以「为/是/冒号/直接跟」
+# 都要吃;真正的确定性证据仍是 create_task 工具调用(见 _extract)。
+DECISION_RE = re.compile(r"本轮决策\s*(?:[：:]\s*|为\s*|是\s*)?(irrigate|none|escalate)",
+                         re.IGNORECASE)
 VERDICT_RE = re.compile(r"\b(success|failed|needs_human)\b")
 # 决策正文里的时长:「对A区执行浇水45秒」/「浇水 30 s」都吃
 DURATION_RE = re.compile(r"(?:浇水|灌溉)\s*(\d{1,3})\s*(?:秒|s\b)")
@@ -99,6 +104,44 @@ async def _maybe_await(value: Any) -> Any:
     return value
 
 
+def _final_status(context: dict[str, Any]) -> str:
+    """跑完 ≠ 成功:Self-Loop 耗尽而仍未达标,必须落 needs_human(PRD 11.4.3)。
+
+    run #28 现场:三轮验证全是 failed(达成率恒为 40.41%),loop 靠 `round > 2` 退出,
+    run 却标 success —— 画布全绿、报告写「闭环成功」,而茶垄一次都没浇够。
+    这是整个平台最危险的一种失败:数字都在,结论反了。
+    """
+    verdict = str(context.get("last_verification") or "")
+    if verdict in {"failed", "needs_human"}:
+        return "needs_human"
+    return "success"
+
+
+def _achievement_text(context: dict[str, Any]) -> str:
+    detail = context.get("last_verification_detail") or {}
+    achievement = detail.get("achievement")
+    if achievement is None:
+        return "无验证结论"
+    return f"达成率 {achievement}%"
+
+
+def _duration_in(payload: dict[str, Any]) -> float:
+    """从任务载荷里取浇水时长:params.duration_s / 顶层 duration_s / params.seconds。
+
+    决策官建单时把时长放在 params 里,修正单(引擎建)也是;老数据有写顶层的。
+    取不到返回 0(调用方据此不覆盖设备层参数)。
+    """
+    params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
+    for value in (params.get("duration_s"), payload.get("duration_s"), params.get("seconds")):
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if number > 0:
+            return number
+    return 0.0
+
+
 def _bind_executor_device(device_id: Any):
     """把本轮执行终端放进 ContextVar,供 AgentRunner 建单时补 payload.device_id。
 
@@ -127,11 +170,12 @@ def _release_executor_device(token) -> None:
 
 
 def _bind_current_task(task_no: Any) -> None:
-    """决策落地后把任务号放进 ContextVar,执行管家下发时自动带上。
+    """把本轮任务号放进 ContextVar,执行管家调 send_device_cmd 时带上。
 
-    `send_device_cmd` 的 schema 里没有 task_no(PRD 7.3),模型时灵时不灵:
-    run #19 它没填 → 基座的认领逻辑不成立(那张单已有 assigned_device)→ 又建一张新单,
-    决策单超时变 dead、真执行的单与 run 脱钩。任务号是引擎已知事实,由这里给。
+    `send_device_cmd` 的 schema 里 `task_no` 是可选参数(agents/tools.py),
+    模型时灵时不灵:run #19 没填 → 基座的认领逻辑不成立(那张单已有 assigned_device)
+    → 又建一张新单,决策单超时变 dead、真执行的单与 run 脱钩。任务号是引擎已知事实,
+    由这里给(agents/base._with_executor_device 在模型没填时用它补参)。
     """
     if not task_no:
         return
@@ -162,6 +206,68 @@ def _open_task_scope():
         return set_current_task_no("")
     except Exception:  # noqa: BLE001
         return None
+
+
+def _bind_pump_duration(duration: Any) -> None:
+    """Self-Loop 修正单的浇水时长放进 ContextVar,执行管家下发时以它为准。
+
+    run #29 现场:修正单载荷写 19.9s,执行管家照着上一轮的「45 秒」下发,
+    设备真浇了 45 秒 —— 达成率算得对、物理动作是错的。
+    """
+    try:
+        from app.agents.context import set_pump_duration
+
+        set_pump_duration(float(duration or 0))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _open_pump_scope():
+    """起跑时清零,run 结束统一还原(上一轮的修正时长不能带进下一次)。"""
+    try:
+        from app.agents.context import set_pump_duration
+
+        return set_pump_duration(0)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _release_pump_scope(token) -> None:
+    if token is None:
+        return
+    try:
+        from app.agents.context import reset_pump_duration
+
+        reset_pump_duration(token)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# ── run_id 的跨层传递(基座 core/run_context)─────────────────────────────
+# create_task 落在工具层、send_cmd 落在设备层,两边都拿不到引擎的 run_id,schema 里
+# 也不该出现它(LLM 不会填)。所以由引擎起跑时 set,基座在同一个 asyncio 上下文里读,
+# tasks.run_id / verifications.run_id 才能落准。
+# 以前不 set 时基座只能兜底「唯一 running 的那条才认」——并发跑两条就记 NULL。
+def _bind_run_id(run_id: Any):
+    if run_id is None:
+        return None
+    try:
+        from app.core.run_context import set_current_run_id
+
+        return set_current_run_id(int(run_id))
+    except Exception:  # noqa: BLE001 基座未合入/无该模块:退回基座自己的兜底
+        return None
+
+
+def _release_run_id(token) -> None:
+    if token is None:
+        return
+    try:
+        from app.core.run_context import reset_current_run_id
+
+        reset_current_run_id(token)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 class WorkflowEngine:
@@ -251,14 +357,19 @@ class WorkflowEngine:
         # payload.device_id(模型不会自己填,漏了就落一张派不出去的空单)。
         device_token = _bind_executor_device(context.get("executor_device"))
         task_token = _open_task_scope()
+        pump_token = _open_pump_scope()
         try:
             await self._walk(start_id, nodes, by_id, context, result, stop_at=None, steps=[0])
-            result.status = "success"
+            result.status = _final_status(context)
+            if result.status == "needs_human":
+                result.error = (f"Self-Loop 已用完仍未达标(最后一轮 "
+                                f"{_achievement_text(context)}),转人工")
         except Exception as exc:  # noqa: BLE001 节点失败要把 run 标 failed,但不能吞掉原因
             result.status = "failed"
             result.error = f"{type(exc).__name__}: {exc}"
         finally:
             _clear_current_task(task_token)
+            _release_pump_scope(pump_token)
             _release_executor_device(device_token)
             result.context = context
             result.duration_ms = int((time.monotonic() - started) * 1000)
@@ -336,6 +447,9 @@ class WorkflowEngine:
                 agent_key = node["agent_key"]
                 record.agent_key = agent_key
                 runner = self.agent_runner_factory(agent_key)
+                # 进节点先把已知任务号递给 Agent:执行管家调 send_device_cmd 时,
+                # schema 的 task_no(可选)由工具层补上,不必指望模型复述。
+                _bind_current_task(context.get("last_task_no"))
                 turn = await runner.run(node.get("input", ""), upstream=self._upstream(context, agent_key))
                 record.output = getattr(turn, "content", "") or ""
                 record.degraded = bool(getattr(turn, "degraded", False))
@@ -350,6 +464,10 @@ class WorkflowEngine:
                     await self._ensure_task(node_id, record, context)
                 # 任务号已知(Agent 建的或引擎补的)就告诉下游,执行管家下发时自动带上
                 _bind_current_task(context.get("last_task_no"))
+                if agent_key == "decision":
+                    # 本轮决策定的时长同样递给执行管家:它没有建单权限,却要传 params,
+                    # 不告诉它就会照上一轮记的数字报一个(run #30:载荷 45s、实浇 60s)。
+                    _bind_pump_duration(context.get("last_duration_s") or 0)
                 record.status = "done"
                 return self._first(node.get("next"))
 
@@ -390,14 +508,22 @@ class WorkflowEngine:
                 return self._first(node.get("next"))
 
             if node_type == "loop":
-                max_iter = int(node.get("max_iterations", 1))
+                # max_iterations 是**总轮次**上限(PRD 11.4「最多 2 轮」),不是「补跑次数」:
+                # 主链刚跑完的那次验证已经算第 1 轮。按「补跑次数」算会变成 1+2=3 轮,
+                # 而且最后一轮跑完再没人验证 —— 修正单建了却没执行,库里多一张会真
+                # 浇水的孤儿单(跑满上限时尤其危险)。
+                max_rounds = max(1, int(node.get("max_iterations", 1)))
                 body = node.get("body_next")
                 exit_expr = node.get("exit_expression", "")
-                # 进入 loop 时主链刚跑完一轮(如 n11 的验证),这一轮计入 round
-                context["round"] = max(1, int(context.get("round", 0)) + 1)
+                # 主链刚跑完的那次验证已经算第 1 轮;上游没产出验证结论的场合
+                # (手工 DAG / 本轮压根没建任务)从 0 起算,否则 max_iterations=1
+                # 会把 body 直接跳过 —— 那种情况下 body 本身就是「补一次」的机会。
+                if context.get("last_verification"):
+                    context["round"] = max(1, int(context.get("round", 0)))
+                else:
+                    context["round"] = int(context.get("round", 0))
                 rounds = 0
-                # 先判后循环:主链那次验证已达标就直接走 next,不会白跑一遍 body
-                while rounds < max_iter:
+                while True:
                     try:
                         if evaluate_bool(exit_expr, context):
                             break
@@ -409,8 +535,14 @@ class WorkflowEngine:
                             logger.warning(
                                 "loop 节点 {} 退出表达式字段缺失({}),按未达标处理", node_id, exc
                             )
-                    rounds += 1
+                    if context["round"] >= max_rounds:
+                        break
                     context["round"] = int(context.get("round", 1)) + 1
+                    rounds += 1
+                    # 未达标才回到 body:先按验证层算好的修正方案落一张新单,
+                    # 否则回跳只是拿同一批数据重复验证(run #28 三轮实测:
+                    # 达成率恒为 40.41%,因为根本没人再浇一次水)。
+                    await self._apply_correction(node_id, record, context)
                     await self._walk(body, nodes, by_id, context, result, stop_at=node_id, steps=steps)
                 record.output = f"rounds={rounds}"
                 record.status = "done"
@@ -484,12 +616,89 @@ class WorkflowEngine:
         if not task_no:
             raise WorkflowError(f"节点 {node_id} 补建任务未返回 task_no:{value!r}")
         context["last_task_no"] = task_no
+        context["last_duration_s"] = float(duration)
         record.tool_calls = list(record.tool_calls) + [{
             "id": "engine-create_task", "name": "create_task",
             "arguments": {"type": "device_cmd", "payload": payload, "priority": 9},
             "status": "executed", "result": value,
         }]
         logger.warning("决策为 irrigate 但未落单,引擎已补建 {}（{}s）", task_no, duration)
+
+    async def _apply_correction(self, node_id: str, record: NodeRecord,
+                                context: dict[str, Any]) -> None:
+        """Self-Loop 的「修正」这一步:按验证引擎给的方案建新任务(PRD 11.4.2)。
+
+        为什么必须由引擎做:验证层已经按 11.4.1 的规则算出 correction
+        (缺口>15→split / ≤15→topup / 浇了没升→suspect_data),但**没有人执行它**。
+        run #28 实测三轮验证全是 40.41%:body 只回到验证官,既没建修正单也没再浇水,
+        同一批传感器数据被反复验了三遍 —— 画布上循环转了,物理世界一动不动。
+
+        suspect_data(数据可疑)不建单:先补测,不盲目再浇(PRD 11.4.1 第三条)。
+        """
+        correction = context.get("last_correction")
+        if not isinstance(correction, dict) or not correction:
+            return
+        detail = context.get("last_verification_detail") or {}
+        strategy = str(correction.get("strategy") or "")
+        try:
+            duration = float(correction.get("duration_s") or 0)
+        except (TypeError, ValueError):
+            duration = 0.0
+        feedback = {
+            "round": context.get("round"),
+            "strategy": strategy,
+            "times": int(correction.get("times") or 1),
+            "interval_s": correction.get("interval_s") or 0,
+            "duration_s": duration,
+            "gap": correction.get("gap", detail.get("gap")),
+            "reason": correction.get("reason") or "",
+            "from_task_no": detail.get("task_no"),
+            "verification_round": detail.get("round_no"),
+        }
+        if strategy == "suspect_data" or duration <= 0:
+            logger.warning("Self-Loop 修正策略 {} 无需建单(先复测):{}",
+                           strategy or "?", feedback["reason"])
+            feedback["to_task_no"] = ""
+            context.setdefault("feedbacks", []).append(feedback)
+            return
+
+        duration = max(5.0, min(120.0, duration))
+        payload: dict[str, Any] = {
+            "action": "pump",
+            "params": {"duration_s": duration},
+            "target_range": [55, 65],
+            "created_by": "workflow-engine",
+            "trigger": "selfloop",           # PRD 11.4.2 的修正任务标记
+        }
+        executor_device = context.get("executor_device")
+        if executor_device:
+            payload["device_id"] = executor_device
+        try:
+            value = await _maybe_await(
+                self.tool_invoke("create_task",
+                                 {"type": "device_cmd", "payload": payload, "priority": 8})
+            )
+        except Exception as exc:  # noqa: BLE001 修正建单失败要冒泡,不能假装修过了
+            raise WorkflowError(f"节点 {node_id} Self-Loop 修正建单失败:{exc}") from exc
+        task_no = str((value or {}).get("task_no") or "") if isinstance(value, dict) else ""
+        if not task_no:
+            raise WorkflowError(f"节点 {node_id} Self-Loop 修正建单未返回 task_no:{value!r}")
+
+        context["last_task_no"] = task_no
+        context["last_duration_s"] = duration
+        # 新单还没验过:清掉上一轮的结论,否则 loop 的退出表达式会拿旧值判
+        context["last_verification"] = ""
+        _bind_pump_duration(duration)
+        record.tool_calls = list(record.tool_calls) + [{
+            "id": "engine-self-loop", "name": "create_task",
+            "arguments": {"type": "device_cmd", "payload": payload, "priority": 8},
+            "status": "executed", "result": value,
+        }]
+        feedback["to_task_no"] = task_no
+        context.setdefault("feedbacks", []).append(feedback)
+        logger.warning("Self-Loop 第 {} 轮未达标({}),已按 {} 建修正单 {} {}s",
+                       feedback["round"], f"{detail.get('achievement')}%",
+                       strategy, task_no, duration)
 
     @staticmethod
     def _upstream(context: dict[str, Any], agent_key: str) -> list[str]:
@@ -518,24 +727,56 @@ class WorkflowEngine:
         if agent_key == "decision":
             found = DECISION_RE.search(content or "")
             if found:
-                context["last_decision"] = found.group(1)
+                # 归一成小写:DAG 的表达式写的是 == 'irrigate',模型偶尔写成 Irrigate
+                context["last_decision"] = found.group(1).lower()
             for call in tool_calls or []:
                 result = call.get("result")
                 if call.get("name") == "create_task" and isinstance(result, dict) and result.get("task_no"):
                     context["last_task_no"] = result["task_no"]
+                    # 真的建了单就不可能是否决:工具事实优先于正文措辞。
+                    # (run #26 正文写「本轮决策为irrigate」没被旧正则抓到,分流走了
+                    # 「无需作业归档」——有单却没执行,比判错更难看。)
+                    context["last_decision"] = "irrigate"
+                    # 建单时定的时长也要记下来:执行管家下发时会照自己记的数字报一遍,
+                    # run #30 实测载荷 45s、设备真浇 60s(模型传了 60)。时长和任务号一样,
+                    # 是引擎给的事实,不能两处各说一套。
+                    args = call.get("arguments") or {}
+                    payload = args.get("payload") if isinstance(args, dict) else None
+                    if isinstance(payload, dict):
+                        dur = _duration_in(payload)
+                        if dur:
+                            context["last_duration_s"] = dur
         elif agent_key == "verifier":
             verdict = ""
+            detail: dict = {}
             for call in tool_calls or []:
                 result = call.get("result")
                 if call.get("name") == "verify_result" and isinstance(result, dict):
                     verdict = str(result.get("verdict") or "")
                     if verdict:
+                        detail = result
                         break
             if not verdict:
                 found = VERDICT_RE.search(content or "")
                 verdict = found.group(1) if found else ""
             if verdict:
                 context["last_verification"] = verdict
+            # 验证层已经按 PRD 11.4.1 算好修正方案(topup/split/suspect_data),
+            # 引擎直接拿来建单,不重复实现规则、也不指望模型自己算。
+            if detail:
+                context["last_verification_detail"] = {
+                    "task_no": detail.get("task_no"),
+                    "baseline": detail.get("baseline"),
+                    "measured": detail.get("measured"),
+                    "achievement": detail.get("achievement"),
+                    "confidence": detail.get("confidence"),
+                    "gap": detail.get("gap"),
+                    "round_no": detail.get("round_no"),
+                    "correction": detail.get("correction") or {},
+                }
+                correction = detail.get("correction")
+                if isinstance(correction, dict) and correction:
+                    context["last_correction"] = correction
 
 
 # ─────────────────────────── 接缝:start_run ───────────────────────────
@@ -603,6 +844,9 @@ def start_run(wf_id: int, trigger: str = "manual") -> int:
     )
 
     async def _drive() -> None:
+        # run_id 跟着上下文走:create_task / send_cmd 在工具层与设备层落库时读它,
+        # 不靠基座「唯一 running 才认」的兜底(并发跑两条就记 NULL)。
+        run_token = _bind_run_id(run_id)
         try:
             # 兜底超时:节点里任何一次 await 不回来(限流退避、工具卡死、MQTT 失联),
             # run 就会永远挂在 running,前端只能一直转圈,演示当场死掉。
@@ -619,6 +863,8 @@ def start_run(wf_id: int, trigger: str = "manual") -> int:
                              f"运行超时(>{RUN_TIMEOUT_S:.0f}s),最后节点 {engine.current_node or '未知'}")
         except Exception as exc:  # noqa: BLE001 后台任务异常必须落到 run 记录
             _deps.update_run(run_id, "failed", {}, f"{type(exc).__name__}: {exc}")
+        finally:
+            _release_run_id(run_token)
 
     try:
         asyncio.get_running_loop().create_task(_drive())

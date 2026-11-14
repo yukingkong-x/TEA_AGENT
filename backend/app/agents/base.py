@@ -17,6 +17,7 @@ from app.agents.context import (
     CURRENT_AGENT_KEY,
     current_context_note,
     current_executor_device,
+    current_pump_duration,
     current_task_no,
 )
 from app.agents.fallback import DEGRADED_PREFIX, FALLBACKS, generic_fallback
@@ -82,22 +83,33 @@ def _with_executor_device(tool_name: str, arguments: dict) -> dict:
 
     1. `create_task` 的 device_cmd 任务:模型的参数里只有 action/params/target_range,
        没有 device_id;基座落库后 assigned_device 为空 → 调度器派不出去 → 那张单永远不动。
-    2. `send_device_cmd` 的 task_no:执行管家的 schema 里没有这个字段(PRD 7.3),
-       run #19 实测模型没照上游提示填 → `_pending_device_cmd` 认领失败 → send_cmd
-       另建一张新单:决策单超时变 dead、真执行的单与 run 脱钩、验证官去验那张没下发的。
+    2. `send_device_cmd` 的 task_no:schema 里它是可选字段(2026-11-14 按队友 B 的要求
+       补上,基座 core/tool_impl.send_device_cmd 早就支持),但模型仍然时灵时不灵 ——
+       run #19 没填 → `_pending_device_cmd` 认领失败 → send_cmd 另建一张新单:
+       决策单超时变 dead、真执行的单与 run 脱钩、验证官去验那张没下发的。
     两者都由接线层在起跑/决策落地时给出(agents/context),这里只做填充,模型填了就不覆盖。
     """
     if not isinstance(arguments, dict):
         return arguments
 
-    if tool_name == "send_device_cmd" and not arguments.get("task_no"):
-        task_no = current_task_no()
-        if task_no:
-            patched = json.loads(json.dumps(arguments, default=str))
-            patched["task_no"] = task_no
-            logger.debug("下发指令缺少 task_no,按本轮任务补成 {}", task_no)
-            return patched
-        return arguments
+    if tool_name == "send_device_cmd":
+        patched = dict(arguments)
+        changed = False
+        if not patched.get("task_no"):
+            task_no = current_task_no()
+            if task_no:
+                patched["task_no"] = task_no
+                changed = True
+                logger.debug("下发指令缺少 task_no,按本轮任务补成 {}", task_no)
+        # 修正单的时长以引擎算出的为准:模型手里还留着上一轮的「45 秒」
+        duration = current_pump_duration()
+        if duration > 0 and patched.get("action") in (None, "", "pump"):
+            params = patched.get("params") if isinstance(patched.get("params"), dict) else {}
+            if float(params.get("duration_s") or 0) != duration:
+                patched["params"] = {**params, "duration_s": duration}
+                changed = True
+                logger.debug("下发指令沿用旧时长,按修正单改成 {}s", duration)
+        return patched if changed else arguments
 
     if tool_name != "create_task" or arguments.get("type") != "device_cmd":
         return arguments
@@ -210,6 +222,13 @@ class AgentRunner:
         facts = current_context_note()
         if facts:
             system = f"{system}\n\n{facts}"
+        # 本轮任务号同理:它是引擎给的事实,不该让模型从上游正文里摘(上游写的是
+        # 「任务 task-xxx」占位时,摘下来只会更错)。写进 system 后模型能自己填
+        # send_device_cmd / verify_result 的 task_no;没填的由工具层用同一个值兜底。
+        task_no = current_task_no()
+        if task_no:
+            system = (f"{system}\n\n[本轮任务号] {task_no}"
+                      f"(send_device_cmd 与 verify_result 的 task_no 都填它,不要自己编号)")
         return (
             [{"role": "system", "content": system}]
             + truncated
