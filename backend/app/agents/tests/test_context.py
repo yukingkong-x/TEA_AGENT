@@ -79,3 +79,19 @@ def test_execute_tool_still_denies_unauthorized():
     tc = SimpleNamespace(id="call_2", name="send_device_cmd", arguments={})
     record, _ = asyncio.run(runner._execute_tool(tc))
     assert record["status"] == "denied"
+
+
+def test_contextvar_is_shared_with_backend():
+    """接缝铁律:合并后必须和基座是**同一个 ContextVar 对象**。
+
+    两边各建一个 ContextVar 的话,runner set 的是 A、tool_impl 读的是 B,
+    读到空值 → source 静默退化成 "agent",而且完全不报错,现场只能靠肉眼发现。
+    """
+    try:
+        from app.core.tool_impl import CURRENT_AGENT_KEY as backend_var
+    except ModuleNotFoundError:
+        pytest.skip("基座 core/tool_impl.py 未合入(队长分支独立开发期),合并后此用例自动生效")
+
+    from app.agents.context import CURRENT_AGENT_KEY as agent_var
+
+    assert agent_var is backend_var
