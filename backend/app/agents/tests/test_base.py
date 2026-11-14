@@ -165,3 +165,74 @@ async def test_output_parsing_extracts_named_sections():
 def test_parse_sections_handles_plain_text():
     # 断点:无【】的内容解析崩溃 → 本测试失败
     assert parse_sections("没有格式的普通回复") == {}
+
+
+# ── 降级路径:规则模板判了 irrigate,就真的要把任务建出来 ──────────────
+
+class _AsyncRegistry:
+    """只实现 Runner 用到的那两个方法;invoke 必须是 async(生产实现也是)。"""
+
+    def __init__(self, soil=38.5):
+        self.calls: list[tuple[str, dict]] = []
+        self.soil = soil
+
+    def can_use(self, agent_key, tool_name):
+        return True
+
+    def to_openai_schemas(self):
+        return []
+
+    async def invoke(self, name, params=None):
+        self.calls.append((name, dict(params or {})))
+        if name == "get_soil_status":
+            return {"moisture": self.soil, "trend": "flat"}
+        if name == "get_env_status":
+            return {"temperature_c": 15, "humidity_air": 60, "lux": 500}
+        if name == "get_weather":
+            return {"rain_prob": 5, "frost_risk": "无"}
+        if name == "create_task":
+            return {"task_no": "task-degraded-0001"}
+        return {}
+
+    def names(self):
+        return [n for n, _ in self.calls]
+
+
+@pytest.mark.asyncio
+async def test_degraded_decision_creates_task_with_baseline():
+    """降级不是「只播报」:模板说浇 30 秒,就必须有一行任务落库。
+
+    现场教训(run #9 之后):降级时决策官只输出文案不建单 → 执行管家/验证官全没单可做
+    → 工作流显示 success,闭环却是断的。降级恰恰是赛题要看的能力。
+    """
+    registry = _AsyncRegistry(soil=38.5)
+    runner = _runner("decision", [LLMResult(degraded=True)], registry=registry)
+
+    turn = await runner.run(task="决定这轮要不要浇水")
+
+    assert turn.degraded is True
+    assert "create_task" in registry.names()
+    created = [p for n, p in registry.calls if n == "create_task"][0]
+    assert created["type"] == "device_cmd"
+    assert created["payload"]["params"]["duration_s"] == 30
+    assert created["payload"]["baseline"] == pytest.approx(38.5)   # 用真墒情,不用占位
+    assert turn.tool_calls and turn.tool_calls[0]["status"] == "executed"
+
+
+@pytest.mark.asyncio
+async def test_degraded_decision_skips_task_when_soil_is_fine():
+    registry = _AsyncRegistry(soil=62.0)     # 模板会判 none
+    runner = _runner("decision", [LLMResult(degraded=True)], registry=registry)
+
+    await runner.run(task="决定这轮要不要浇水")
+
+    assert "create_task" not in registry.names()
+
+
+def test_irrigate_regex_does_not_fire_on_negative_wording():
+    from app.agents.base import IRRIGATE_RE
+    from app.agents.fallback import decision_fallback
+
+    assert IRRIGATE_RE.search(decision_fallback(soil_moisture=38.5))
+    assert not IRRIGATE_RE.search(decision_fallback(soil_moisture=62.0))
+    assert not IRRIGATE_RE.search("本轮无需灌溉,墒情适宜")

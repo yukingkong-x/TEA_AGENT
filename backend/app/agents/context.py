@@ -44,3 +44,21 @@ def current_agent_source() -> str:
         return key
     return f"agent:{key}"
 
+
+# ── 平台事实(设备清单)────────────────────────────────────────────────
+# 背景(2026-11-14 真实 run 实测):LLM 不知道平台里设备 id 叫什么,把地点名
+# 「A区茶垄」当成 device_id 传进 get_soil_status → 工具报「设备不存在」→ 六个
+# Agent 全说「设备信息缺失」→ 决策 none → 一个任务都不创建。工具没错,是上下文缺了事实。
+# 由接线层(workflow/wiring)在每次 run 里 set,AgentRunner._build_messages 拼进 system。
+CURRENT_CONTEXT_NOTE = ContextVar("current_context_note", default="")
+
+
+def current_context_note() -> str:
+    return CURRENT_CONTEXT_NOTE.get() or ""
+
+
+def set_context_note(note: str):
+    """返回 token,调用方负责 reset(和 agent_key 一样的用法)。"""
+    return CURRENT_CONTEXT_NOTE.set(note or "")
+
+
