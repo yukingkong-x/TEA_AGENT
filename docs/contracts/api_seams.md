@@ -91,7 +91,7 @@ HTTP 503
 
 | 页面 | 接口 |
 | --- | --- |
-| 大屏 | `GET /api/sensor/latest`、`GET /api/devices`、`GET /api/alerts`、`WS /ws/dashboard` |
+| 大屏 | `GET /api/sensor/latest`、`GET /api/devices`（见下注）、`GET /api/alerts`、`WS /ws/dashboard` |
 | 画布 | `GET /api/workflows`、`PUT /api/workflows/{id}`、`POST /api/workflows/{id}/run`、`GET /api/runs/{id}` |
 | 对话剧场 | `GET /api/runs/{id}`（含 `messages`）、WS `agent_message` |
 | 任务中心 | `GET /api/tasks?status=&page=`、`GET /api/tasks/{task_no}`、WS `task_status` |
@@ -105,6 +105,14 @@ WS 消息统一：`{"type": "...", "data": {...}, "ts": 1730700000}`，type ∈
 连接建立后立刻收到一帧 `mode_changed`（`data.hello=true`），前端用它点亮顶部状态条；客户端每 20s 发 `{"type":"ping"}` 保活。
 
 分页统一：`{ items, total, page, page_size, pages }`。
+
+> **`GET /api/devices` 的分组约定（给 A，2026-11-14 起）**
+> 缺省按**当前运行模式**只返回该模式那一组：Mock 模式返 3 台 `mock-*`，Real 模式返 3 台真机。
+> 这样大屏不用改代码就不会出现"3 台真设备永远灰着"。
+> 需要全量或显式分组时用查询参数（这三个值之外的输入返回 400）：
+> - `?is_mock=true` / `?is_mock=1` → 只要 Mock
+> - `?is_mock=false` / `?is_mock=0` → 只要真机
+> - `?is_mock=all` → 全量 6 台（设备管理页用）
 
 ---
 
@@ -125,6 +133,13 @@ WS 消息统一：`{"type": "...", "data": {...}, "ts": 1730700000}`，type ∈
 | 11 | （PRD 未写）土壤模型加残余含水量下限 12% | 蒸发在接近下限时线性放缓，湿度不再无限下降 | 隔夜跑 14 小时会把湿度耗到 0%，第二天演示全是 0.0；真实土壤束缚水也蒸发不掉 |
 | 12 | （PRD 未写）`GET /api/sensor/history` 的 `limit` 语义 | 取**最新** N 个点（先倒序取再反转） | 此前升序+limit 返回窗口里最老的 N 个点，前端曲线和 `get_soil_status` 会拿到几小时前的旧数据 |
 | 13 | （运维注意）宿主机休眠会导致遥测断流 | 演示脚本预演前有数据龄体检；`scripts/demo_rehearsal.py` 遇陈旧数据自动等待新鲜点 | Windows 睡眠会暂停 Docker VM；演示前确认 `soil_age` < 70s（见第 0 幕） |
+| 14 | 9.1 默认工作流里 `n11b`（Self-Loop 的 loop 节点）没有任何入边 | `validate_dag` 把 loop 视为「环绕 `body_next` 的结构标记」：body 可达即 loop 可达，且 loop 的 `next` 继续参与扩散；非 loop 节点仍必须从 start 可达 | 照普通顶点判可达性会把 PRD 原文 DAG 判成非法（`n11b` 不可达）→ 画布一保存默认工作流就 400 → PRD 9.4 第一条验收不成立。回归用例：`tests/test_base_logic.py::test_dag_prd_default_workflow_passes` |
+| 15 | 5.3 指令下发 | `send_cmd` 内部先 `db.commit()` 再 `publish()`，提交责任收进函数；调用方再 commit 一次无害 | 设备 ack 是毫秒级回来的，在 paho 线程用另一个 session 查 Task。只 flush 不提交时对方看不见 → `task=None` → 只广播不落库 → 任务永远卡 dispatched，超时后补一条假的「指令超时」报警。回归用例：`tests/test_command_flow.py` |
+| 16 | 6.14 设置页写 `llm_api_key` | `set_many` 加硬闸：空值不改、值含 `*` 或以 `enc:` 开头一律跳过并 warning | `GET /api/settings` 返回 `sk-a****wxyz`，前端把整张表单原样 PUT 回来是最常见写法；掩码当明文再加密落库 → LLM 全线 401 且极难排查。不能只靠「空串=不改」 |
+| 17 | 7.4 `GET /api/devices` 返回全部设备 | 缺省只返回当前模式那一组，`?is_mock=true/false/all` 可显式指定 | 3 台真机 + 3 台 mock 同屏时，大屏会有 3 台永远灰着（Mock 演示）或 3 台假设备（Real 演示） |
+| 18 | 5.2 遥测 `ts` 直接用上报值 | `abs(ts-now) > 300s` 时改用服务器时间并记 warning | 固件无 RTC / 掉电回到 1970 是常见故障：脏 ts 会污染曲线、让 `sweep_offline` 立刻判离线、趋势计算全废 |
+| 19 | 5.5 新设备登记 | `ensure_device` 建新设备时 `online=False, last_seen=None`（不预置在线） | device_id 打错一个字，下发一次指令就凭空造出一台「在线」设备，120s 后再补一条假离线报警；让它等自己的心跳转在线 |
+| 20 | 12.2 Mock/Real 切换 | 切 Real 时 `deactivate_mock_devices()` 把 `is_mock` 设备置离线、清 `last_seen` 与报警标记 | 只停模拟器线程不够：`mock-*` 还留在表里，120s 后 `sweep_offline` 连发 3 条假离线报警，演示切真机时大屏突然冒 3 条红点 |
 
 ---
 

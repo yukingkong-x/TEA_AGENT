@@ -13,7 +13,8 @@ def _pt(value: float, minutes_ago: float) -> dict:
     return {"value": value, "ts": ts}
 
 
-def test_trend_positive_when_drying():
+def test_trend_negative_when_drying():
+    """湿度在掉，斜率必须是负的（名字以前写成 positive，和断言正好相反，容易误读）。"""
     points = [_pt(40.0, 10), _pt(38.0, 5), _pt(37.0, 0)]
     slope = queries.trend_per_min(points)
     assert slope == pytest.approx(-0.3, abs=0.01)  # 3% / 10min

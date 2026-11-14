@@ -31,12 +31,15 @@ SUB_TOPICS = [
     ("tea/device/+/status", QOS),
     ("tea/device/+/ack", QOS),
 ]
-KNOWN_METRICS = {"temperature_c", "humidity_air", "lux", "soil_moisture"}
+# 上行主题：broker 不可用时这些报文要回灌给本地处理链，否则"Mock 不怕掉线"只对下行成立
+UPSTREAM_KINDS = {"telemetry", "status", "ack"}
+# 上报时间戳可接受的偏差；超出就用服务器时间（固件 RTC 掉到 1970 会把曲线拖成一条线）
+TS_TOLERANCE_S = 300
 
 _client: Optional[mqtt.Client] = None
 _connected = threading.Event()
-_local_dispatch: Optional[Callable[[str, dict[str, Any]], None]] = None
-_stats = {"rx": 0, "tx": 0, "last_rx_ts": 0.0, "connected": False, "reconnects": 0}
+_local_dispatchers: list[Callable[[str, dict[str, Any]], None]] = []
+_stats = {"rx": 0, "rx_local": 0, "tx": 0, "last_rx_ts": 0.0, "connected": False, "reconnects": 0}
 
 
 # ------------------------------------------------------------------ 内部：分主题处理
@@ -45,9 +48,31 @@ def _device_id_from_topic(topic: str) -> str:
     return parts[2] if len(parts) >= 4 else "unknown"
 
 
+def _sane_ts(raw: Any, device_id: str = "") -> float:
+    """上报时间戳合理性收敛。
+
+    固件没有 RTC / 掉电后回到 1970 是常见故障，脏 ts 一旦落库：
+    曲线被拖成一条直线、`sweep_offline` 立刻判离线、趋势计算全废。
+    偏差超过 TS_TOLERANCE_S 一律改用服务器时间并记 warning（留痕便于硬件同事排查）。
+    """
+    now = time.time()
+    # bool 是 int 的子类，得先排除，否则 True 会被当成 1
+    if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+        return now
+    ts = float(raw)
+    if abs(ts - now) > TS_TOLERANCE_S:
+        logger.warning(
+            "上报时间戳异常：device={} ts={:.0f} 与服务器偏差 {:.0f}s，已改用服务器时间",
+            device_id or "?",
+            ts,
+            ts - now,
+        )
+        return now
+    return ts
+
+
 def _handle_telemetry(device_id: str, payload: dict[str, Any]) -> None:
-    ts_raw = payload.get("ts")
-    ts = float(ts_raw) if isinstance(ts_raw, (int, float)) else time.time()
+    ts = _sane_ts(payload.get("ts"), device_id)
     seq = payload.get("seq")
     metrics = payload.get("metrics") or {}
     if not isinstance(metrics, dict) or not metrics:
@@ -98,8 +123,7 @@ def _handle_telemetry(device_id: str, payload: dict[str, Any]) -> None:
 def _handle_status(device_id: str, payload: dict[str, Any]) -> None:
     from ..devices import registry
 
-    ts_raw = payload.get("ts")
-    ts = float(ts_raw) if isinstance(ts_raw, (int, float)) else time.time()
+    ts = _sane_ts(payload.get("ts"), device_id)
     online = payload.get("online", True)
     with session_scope() as db:
         device = registry.touch(
@@ -160,17 +184,14 @@ def _on_disconnect(client: mqtt.Client, userdata, flags=None, reason_code=None, 
     logger.warning("MQTT 断开（{}），将自动重连", reason_code)
 
 
-def _on_message(client: mqtt.Client, userdata, msg: mqtt.MQTTMessage) -> None:
-    _stats["rx"] += 1
-    _stats["last_rx_ts"] = time.time()
-    try:
-        payload = json.loads(msg.payload.decode("utf-8"))
-    except Exception as exc:
-        logger.warning("MQTT 报文不是合法 JSON（{}）：{}", msg.topic, exc)
-        return
+def _dispatch_inbound(topic: str, payload: dict[str, Any]) -> None:
+    """上行报文的唯一处理入口。
 
-    device_id = _device_id_from_topic(msg.topic)
-    kind = msg.topic.rsplit("/", 1)[-1]
+    paho 回调走这里，broker 挂掉时的进程内回灌也走这里——保证两条路径
+    入库口径完全一致（不能出现"有 broker 时数据才进库"的隐性依赖）。
+    """
+    device_id = _device_id_from_topic(topic)
+    kind = topic.rsplit("/", 1)[-1]
     try:
         if kind == "telemetry":
             _handle_telemetry(device_id, payload)
@@ -179,40 +200,90 @@ def _on_message(client: mqtt.Client, userdata, msg: mqtt.MQTTMessage) -> None:
         elif kind == "ack":
             _handle_ack(device_id, payload)
         else:
-            logger.debug("忽略非上行主题：{}", msg.topic)
+            logger.debug("忽略非上行主题：{}", topic)
     except Exception as exc:  # 任何异常都不能让 paho 线程死掉
-        logger.exception("处理 MQTT 消息失败 topic={} err={}", msg.topic, exc)
+        logger.exception("处理 MQTT 消息失败 topic={} err={}", topic, exc)
+
+
+def _on_message(client: mqtt.Client, userdata, msg: mqtt.MQTTMessage) -> None:
+    _stats["rx"] += 1
+    _stats["last_rx_ts"] = time.time()
+    try:
+        payload = json.loads(msg.payload.decode("utf-8"))
+    except Exception as exc:
+        logger.warning("MQTT 报文不是合法 JSON（{}）：{}", msg.topic, exc)
+        return
+    _dispatch_inbound(msg.topic, payload)
 
 
 # ------------------------------------------------------------------ 对外 API
 def set_local_dispatcher(fn: Optional[Callable[[str, dict[str, Any]], None]]) -> None:
-    """Mock 模拟器注册进程内直投回调（broker 掉线时仍能演示）。"""
-    global _local_dispatch
-    _local_dispatch = fn
+    """独占式注册进程内直投接收方（兼容旧用法：fn=None 表示清空）。
+
+    新代码请用 register/unregister：模拟器曾经独占这一个槽位，
+    任何第二个接收方都会把它悄悄顶掉。
+    """
+    _local_dispatchers.clear()
+    if fn is not None:
+        _local_dispatchers.append(fn)
+
+
+def register_local_dispatcher(fn: Callable[[str, dict[str, Any]], None]) -> None:
+    """注册一个进程内直投接收方（幂等，可多个）。"""
+    if fn not in _local_dispatchers:
+        _local_dispatchers.append(fn)
+
+
+def unregister_local_dispatcher(fn: Callable[[str, dict[str, Any]], None]) -> None:
+    if fn in _local_dispatchers:
+        _local_dispatchers.remove(fn)
+
+
+def _deliver_locally(topic: str, text: str) -> int:
+    """broker 不可用时的进程内投递，返回投递到的接收方数量。
+
+    上行主题必须先回灌给 `_dispatch_inbound`：模拟器发 telemetry/ack 也是走
+    publish 出去的，broker 一挂若不回灌，数据与回执就都丢了（下行 cmd 反而没事）。
+    """
+    try:
+        payload = json.loads(text)
+    except Exception as exc:
+        logger.warning("进程内直投失败（非 JSON）{}：{}", topic, exc)
+        return 0
+    if not isinstance(payload, dict):
+        logger.warning("进程内直投失败（报文不是对象）{}", topic)
+        return 0
+
+    delivered = 0
+    if topic.rsplit("/", 1)[-1] in UPSTREAM_KINDS:
+        _stats["rx_local"] += 1
+        _stats["last_rx_ts"] = time.time()
+        _dispatch_inbound(topic, payload)
+        delivered += 1
+    for fn in list(_local_dispatchers):
+        try:
+            fn(topic, payload)
+            delivered += 1
+        except Exception as exc:  # pragma: no cover
+            logger.warning("进程内直投接收方失败 {}：{}", topic, exc)
+    return delivered
 
 
 def publish(topic: str, payload: dict[str, Any] | str, qos: int = QOS) -> bool:
     """发布消息。返回是否真的发出去了（False 时已尝试进程内直投）。"""
-    global _stats
     text = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
     client = _client
     if client is not None and _connected.is_set():
         try:
             info = client.publish(topic, text, qos=qos)
-            ok = info.rc == mqtt.MQTT_ERR_SUCCESS
-            if ok:
+            if info.rc == mqtt.MQTT_ERR_SUCCESS:
                 _stats["tx"] += 1
-            return ok
+                return True
         except Exception as exc:  # pragma: no cover
             logger.warning("MQTT 发布失败 {}：{}", topic, exc)
 
-    if _local_dispatch is not None:
-        try:
-            _local_dispatch(topic, json.loads(text) if isinstance(text, str) else text)
-            logger.debug("MQTT 不可用，已进程内直投：{}", topic)
-            return False
-        except Exception as exc:  # pragma: no cover
-            logger.warning("进程内直投失败 {}：{}", topic, exc)
+    if _deliver_locally(topic, text):
+        logger.debug("MQTT 不可用，已进程内投递：{}", topic)
     return False
 
 

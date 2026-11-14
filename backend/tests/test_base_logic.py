@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -13,8 +14,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.api._dag import validate_dag  # noqa: E402
+from app.core.runtime_settings import _secret_write_guard  # noqa: E402
 from app.devices.command import MAX_PUMP_DURATION_S, _clamp_params  # noqa: E402
 from app.mock.simulator import SoilModel  # noqa: E402
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
 # ---------------------------------------------------------------- DAG 校验
@@ -70,6 +74,90 @@ def test_dag_unknown_agent_key():
     dag = _minimal_dag()
     errors = validate_dag(dag, known_agents={"weather"})
     assert any("scout" in e for e in errors)
+
+
+def _prd_default_dag() -> dict:
+    return json.loads((FIXTURES / "prd_default_dag.json").read_text(encoding="utf-8"))
+
+
+def test_dag_prd_default_workflow_passes():
+    """PRD 9.1 默认工作流**原样**必须通过。
+
+    回归点：n11b 是 Self-Loop 的 loop 节点，PRD 原文 n11.next=["n13"]、n11b.next=["n13"]，
+    没有任何节点指向 n11b。可达性检查若把 loop 当普通顶点，就会判它不可达 →
+    画布一保存默认工作流就 400 → PRD 9.4 第一条验收不成立。
+    """
+    assert validate_dag(_prd_default_dag()) == []
+
+
+def test_dag_loop_needs_no_inbound_edge():
+    """loop 只靠 body_next 悬挂：body 可达即 loop 可达，且 loop 的 next 要继续扩散。
+
+    n3 没有任何入边；n5 只能从 n3 的出口到达——两者都必须算可达。
+    """
+    dag = {
+        "nodes": [
+            {"id": "n1", "type": "start", "next": ["n2"]},
+            {"id": "n2", "type": "agent", "agent_key": "verifier", "next": ["n4"]},
+            {"id": "n3", "type": "loop", "body_next": "n2", "next": ["n5"]},
+            {"id": "n5", "type": "tool", "next": ["n4"]},
+            {"id": "n4", "type": "end"},
+        ]
+    }
+    assert validate_dag(dag) == []
+
+
+def test_dag_loop_with_unreachable_body_still_rejected():
+    """loop 不能凭空豁免自己的 body：body 走不到，loop 与 body 一起报不可达。"""
+    dag = {
+        "nodes": [
+            {"id": "n1", "type": "start", "next": ["n2"]},
+            {"id": "n2", "type": "end"},
+            {"id": "n3", "type": "loop", "body_next": "n8", "next": []},
+            {"id": "n8", "type": "tool"},
+        ]
+    }
+    errors = validate_dag(dag)
+    assert any("不可达" in e for e in errors), errors
+    assert any("n3" in e and "n8" in e for e in errors), errors
+
+
+def test_dag_orphan_non_loop_still_rejected():
+    """非 loop 的孤立节点照旧报错，并且要提示「没有任何节点指向它」。"""
+    dag = _minimal_dag()
+    dag["nodes"].append({"id": "n9", "type": "tool"})
+    errors = validate_dag(dag)
+    assert any("不可达" in e and "n9" in e for e in errors), errors
+    assert any("没有任何节点指向它" in e for e in errors), errors
+
+
+# ---------------------------------------------------------------- 敏感配置写入闸门
+def test_secret_guard_blocks_masked_value():
+    """GET /api/settings 返回 sk-a****wxyz，前端原样 PUT 回来必须拦住。"""
+    assert _secret_write_guard("llm_api_key", "sk-a****wxyz") is True
+
+
+def test_secret_guard_blocks_already_encrypted():
+    """密文回传会二次加密，照样是灾难。"""
+    assert _secret_write_guard("llm_api_key", "enc:gAAAAABfake") is True
+
+
+def test_secret_guard_blocks_empty():
+    """空值 = 不改，不能把已存的 key 抹成空。"""
+    assert _secret_write_guard("llm_api_key", "") is True
+    assert _secret_write_guard("llm_api_key", "   ") is True
+    assert _secret_write_guard("llm_api_key", None) is True
+
+
+def test_secret_guard_allows_plaintext():
+    assert _secret_write_guard("llm_api_key", "sk-abcdef123456") is False
+
+
+def test_secret_guard_ignores_normal_keys():
+    """非敏感字段不受影响：空串也照常落库。"""
+    assert _secret_write_guard("mode", "real") is False
+    assert _secret_write_guard("mode", "") is False
+    assert _secret_write_guard("weather_scenario", "rainy") is False
 
 
 # ---------------------------------------------------------------- 指令参数

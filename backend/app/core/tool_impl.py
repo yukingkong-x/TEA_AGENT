@@ -86,10 +86,17 @@ def create_task(
         }
 
 
-def raise_alert(level: str, message: str) -> dict[str, Any]:
-    """写 alerts 表 + WS 推送（level 白名单在 queries.push_alert 里校验）。"""
+def raise_alert(level: str, message: str, source: str = "agent") -> dict[str, Any]:
+    """写 alerts 表 + WS 推送（level 白名单在 queries.push_alert 里校验）。
+
+    source 必须能区分发起方（PRD 6.11）：verifier 那条校验失败报警要落
+    `agent:verifier`、安全阀要落 `system:safety`，否则大屏上所有报警都长一个样，
+    演示时没法说明"这条是验证不通过自动报的"。
+    工具 schema 里没有 source 参数（队长 tools.py 只有 level/message），
+    LLM 调用走默认值；runner 直接调用时请显式传自己的身份。
+    """
     with session_scope() as db:
-        return push_alert(db, level, "agent", message)
+        return push_alert(db, level, source, message)
 
 
 def verify_result(task_no: str) -> dict[str, Any]:

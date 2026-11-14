@@ -15,6 +15,7 @@ from sqlalchemy import select
 
 from ..db import session_scope
 from ..models.settings import Setting
+from .crypto import PREFIX as ENC_PREFIX
 from .crypto import decrypt, encrypt
 from .redis_client import Keys, get_redis
 
@@ -123,16 +124,44 @@ def describe_all() -> list[dict[str, Any]]:
         ]
 
 
+def _secret_write_guard(key: str, value: Any) -> bool:
+    """敏感字段是否应当**跳过写入**（True=保留库中原值）。
+
+    三道闸：空值不改 / 掩码值拒收 / 已加密值拒收（防二次加密）。
+    抽成独立函数是为了能脱离 MySQL 单测——这条逻辑一旦被改坏，
+    症状是 LLM 全线 401，线上极难定位。
+    """
+    if key not in SECRET_KEYS:
+        return False
+    if not isinstance(value, str) or not value.strip():
+        return True
+    return "*" in value or value.startswith(ENC_PREFIX)
+
+
 def set_many(values: dict[str, Any]) -> dict[str, Any]:
     """批量写配置：落库 → 失效缓存 → 返回变更后的全量（脱敏）。
 
     mode 变更由调用方（api/settings.py）额外广播 mode_changed，
     避免本模块依赖 WS 管理器造成循环引用。
+
+    敏感字段（SECRET_KEYS）走 `_secret_write_guard`：
+    GET /api/settings 返回的是 sk-a****wxyz，前端把整张表单原样 PUT 回来
+    是最常见的写法；一旦把掩码当明文再加密落库，LLM 调用会全部 401 且极难排查。
+    命中闸门只记 warning 并跳过该项，不抛异常——设置页不该因一个字段整体失败。
     """
     changed: list[str] = []
+    skipped: list[str] = []
     with session_scope() as db:
         for key, value in values.items():
-            if key in SECRET_KEYS and isinstance(value, str) and value:
+            if _secret_write_guard(key, value):
+                logger.warning(
+                    "跳过敏感配置 {} 的写入（收到 {!r}）：空值视为不改，掩码/密文视为前端回传，均保留库中原值",
+                    key,
+                    str(value)[:12],
+                )
+                skipped.append(key)
+                continue
+            if key in SECRET_KEYS:
                 value = encrypt(value)
             row = db.scalar(select(Setting).where(Setting.key == key))
             if row is None:
@@ -145,6 +174,8 @@ def set_many(values: dict[str, Any]) -> dict[str, Any]:
     _cache_drop()
     if changed:
         logger.info("运行期配置已更新：{}", ", ".join(changed))
+    if skipped:
+        logger.info("运行期配置已跳过：{}", ", ".join(skipped))
     return get_all()
 
 
