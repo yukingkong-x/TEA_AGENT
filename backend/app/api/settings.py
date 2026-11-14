@@ -25,7 +25,10 @@ class SettingsIn(BaseModel):
 def read_settings() -> dict[str, Any]:
     return {
         "mode": runtime_settings.get_mode(),
-        "llm_ready": settings.llm_ready,
+        # 环境变量里的 key 只是其中一处来源：设置页写入 settings 表的 key 同样能真的调通
+        # （workflow/wiring._providers 读的就是 get_secret）。只认 env 会让「填完 key
+        # 仍显示未配置」，演示时最容易误判成没生效。
+        "llm_ready": bool(settings.llm_ready or runtime_settings.get_secret("llm_api_key")),
         "items": runtime_settings.describe_all(),
     }
 
