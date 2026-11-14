@@ -76,18 +76,26 @@ def test_dag_unknown_agent_key():
     assert any("scout" in e for e in errors)
 
 
-def _prd_default_dag() -> dict:
-    return json.loads((FIXTURES / "prd_default_dag.json").read_text(encoding="utf-8"))
+def _prd_default_dag(name: str = "prd_default_dag.json") -> dict:
+    return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
 def test_dag_prd_default_workflow_passes():
-    """PRD 9.1 默认工作流**原样**必须通过。
+    """PRD 9.1 修订后的默认工作流（n11 → n11b → n13）必须通过。
 
-    回归点：n11b 是 Self-Loop 的 loop 节点，PRD 原文 n11.next=["n13"]、n11b.next=["n13"]，
-    没有任何节点指向 n11b。可达性检查若把 loop 当普通顶点，就会判它不可达 →
-    画布一保存默认工作流就 400 → PRD 9.4 第一条验收不成立。
+    队长的 10dfed0 把 n11.next 从 ["n13"] 改成 ["n11b"]，并明确「边只由
+    next/branches/body_next 显式声明，edges 恒为空数组」。
     """
     assert validate_dag(_prd_default_dag()) == []
+
+
+def test_dag_prd_legacy_form_still_passes():
+    """修订**之前**的 PRD 9.1 原文形态也必须通过（向后兼容，不能只认新写法）。
+
+    旧形态：n11.next=["n13"]、n11b 没有任何入边。如果谁把 loop 的结构豁免去掉，
+    这条会立刻红——而那意味着「历史文档里的默认工作流一保存就 400」。
+    """
+    assert validate_dag(_prd_default_dag("prd_default_dag_legacy.json")) == []
 
 
 def test_dag_loop_needs_no_inbound_edge():

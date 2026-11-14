@@ -19,6 +19,10 @@ TASK_STATUS = (
     "timeout",
     "retrying",
     "dead",
+    # 转人工：置信度不足/证据存疑时不硬判成败，交给人复核（PRD 10.2 / 11.3）。
+    # 与 workflow_runs.status 的枚举对齐——两边口径不一致时，同一件事在画布上显示
+    # 「待处理」、在任务列表显示「失败」，评审一眼就能看出是 bug。
+    "needs_human",
     "canceled",
 )
 

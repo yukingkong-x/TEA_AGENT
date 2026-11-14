@@ -41,7 +41,7 @@
     {
       "id": "n11", "type": "agent", "agent_key": "verifier", "name": "验证审计",
       "input": "对刚完成的浇水任务执行复测验证，不达标启动Self-Loop修正。",
-      "next": ["n13"]
+      "next": ["n11b"]
     },
     {
       "id": "n11b", "type": "loop", "name": "Self-Loop",
@@ -55,5 +55,5 @@
     },
     { "id": "n13", "type": "end", "name": "结束" }
   ],
-  "edges": ["显式 next 引用已足够，edges 留作画布布局坐标"]
+  "edges": []
 }

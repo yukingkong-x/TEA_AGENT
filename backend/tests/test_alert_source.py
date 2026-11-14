@@ -29,9 +29,46 @@ from app.core.tool_impl import (  # noqa: E402
 @pytest.fixture(autouse=True)
 def _clean_context():
     """每个用例从干净的上下文开始，避免相互污染。"""
-    token = CURRENT_AGENT_KEY.set(None)
+    token = CURRENT_AGENT_KEY.set("")
     yield
     CURRENT_AGENT_KEY.reset(token)
+
+
+# --------------------------------------------------------------- 与队长模块同一份存储
+def test_shares_the_same_contextvar_object_with_agents_module():
+    """变量必须是队长的同一个对象，不能各建一份。
+
+    这是本模块最容易被改坏的地方：两边都叫 current_agent_key 也**不是同一份存储**，
+    队长在 _execute_tool 里 set 完之后，我这边 get() 拿到的还是空——
+    source 会静默退化成 "agent"，而且不报错、不告警，只有演示时看大屏才发现。
+    """
+    agent_ctx = pytest.importorskip("app.agents.context", reason="没拷 agents/ 的独立环境")
+
+    assert tool_impl.CURRENT_AGENT_KEY is agent_ctx.CURRENT_AGENT_KEY
+
+
+def test_runner_style_set_is_visible_to_raise_alert(monkeypatch):
+    """复现队长的真实调用顺序：base.py set → 工具调用 → raise_alert 读。"""
+    captured: dict[str, str] = {}
+
+    def fake_push_alert(db, level, source, message):
+        captured["source"] = source
+        return {"id": 1, "level": level, "source": source, "message": message}
+
+    import contextlib
+
+    monkeypatch.setattr(tool_impl, "push_alert", fake_push_alert)
+    monkeypatch.setattr(tool_impl, "session_scope", lambda: contextlib.nullcontext(None))
+
+    from app.agents.context import CURRENT_AGENT_KEY as runner_var
+
+    token = runner_var.set("verifier")   # ← 队长 base.py 里就是这样写的
+    try:
+        tool_impl.raise_alert("critical", "实测湿度未达目标区间")
+    finally:
+        runner_var.reset(token)
+
+    assert captured["source"] == "agent:verifier"
 
 
 # --------------------------------------------------------------- 纯函数口径

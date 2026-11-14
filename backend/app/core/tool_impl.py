@@ -32,12 +32,20 @@ from .runtime_settings import get_value
 
 
 # ─────────────────────────── 报警来源（跨地盘的身份传递）───────────────────────────
-# 为什么用 ContextVar 而不是参数：LLM 的工具 schema 里没有 source（队长 tools.py 只暴露
-# level/message），所以「谁报的警」只能由 runner 在调用工具前隐式放进来。
-# 队长在 base.py 的 _execute_tool 里 set(self.agent_key) / finally reset()，本层负责读。
-# 定义在这里、base.py 反过来 import，是为了让 tool_impl 保持零依赖（谁都能 import 它）：
-# base → tools → tool_impl 这条链本来就存在，不会产生循环导入。
-CURRENT_AGENT_KEY: ContextVar[str | None] = ContextVar("current_agent_key", default=None)
+# 为什么用 ContextVar 而不是参数：LLM 的工具 schema 里没有 source 时传不进来，所以
+# 「谁报的警」由 runner 在调用工具前隐式放进上下文。队长在 base.py 的 _execute_tool 里
+# set(self.agent_key) / finally reset(token)，本层负责读。
+#
+# **变量本体在队长的 app/agents/context.py**，这里直接复用同一个对象——如果两边各建一个
+# ContextVar，即使同名也不是同一份存储：他 set 的我永远读不到，source 会静默退化成 "agent"。
+# agents/context.py 是只依赖标准库的叶子模块（不 import tools），所以 core → agents.context
+# 不会形成 core ↔ agents 循环（真正会循环的是 core → agents.tools）。
+try:  # pragma: no cover - 正常部署下必命中
+    from ..agents.context import CURRENT_AGENT_KEY
+    from ..agents.context import current_agent_source as _source_from_context
+except ImportError:  # 独立跑 core 单测、没有 agents/ 时的兜底（行为保持一致）
+    CURRENT_AGENT_KEY = ContextVar("current_agent_key", default="")
+    _source_from_context = None
 
 # source 的命名空间本身（不是 key）：LLM 的 enum 里含 "system"，直接透传，
 # 不能再补成 agent:system——那等于把系统报警冒充成 agent 报警。
@@ -46,7 +54,15 @@ _SOURCE_NAMESPACES = {"agent", "system", "user"}
 
 def current_agent_key() -> str | None:
     """当前执行上下文里的 agent_key（scout/decision/executor/verifier...），无则 None。"""
-    return CURRENT_AGENT_KEY.get()
+    return CURRENT_AGENT_KEY.get() or None
+
+
+def _source_from_context_or_default() -> str:
+    """缺省来源：优先用队长的 current_agent_source()，没有 agents/ 时按同一规则自算。"""
+    if _source_from_context is not None:
+        return _source_from_context()
+    key = CURRENT_AGENT_KEY.get()
+    return f"agent:{key}" if key else "agent"
 
 
 def normalize_alert_source(source: str | None) -> str:
@@ -58,13 +74,9 @@ def normalize_alert_source(source: str | None) -> str:
     - "agent:verifier"/"system:safety" → 原样（已带命名空间）
     - "agent"/"system"  → 原样（命名空间本身，不能再补成 agent:system）
     """
-    if source is None:
-        key = CURRENT_AGENT_KEY.get()
-        return f"agent:{key}" if key else "agent"
+    if source is None or not str(source).strip():
+        return _source_from_context_or_default()
     text = str(source).strip()
-    if not text:
-        key = CURRENT_AGENT_KEY.get()
-        return f"agent:{key}" if key else "agent"
     if ":" in text or text in _SOURCE_NAMESPACES:
         return text
     return f"agent:{text}"

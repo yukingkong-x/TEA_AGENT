@@ -353,6 +353,13 @@ if (Object.keys(dirty).length) await api.put('/settings', { values: dirty })
 **这三种现在一条都不会来，别以为自己接错了。** 先把另外 5 种接通、页面能跑，
 等队长 runner 落地后这三个才有数据；届时我会在群里说一声。
 
+> **2026-11-14 晚更新：画布的三种事件"半通"，别急着接。**
+> 队长引擎已经会发 `node_started` / `node_finished` / `run_started` / `run_finished`，
+> 但（a）名字和上面这张表不一致，（b）载荷恒为空 `{}`（引擎发扁平结构，接线层按
+> `{type,data}` 取）。实测跑完一次工作流，`agent_messages` 表 0 行。
+> 已报给队长修；**修好之前画布高亮仍按本地模拟做**，接上去只会拿到空对象。
+> 详见 `docs/contracts/api_seams.md` 第 6.5 节。
+
 画布节点高亮建议先做**本地模拟**（点"运行"后按 1.2s 一个节点自己走），否则演示时
 画布是静的，观感很差。
 
