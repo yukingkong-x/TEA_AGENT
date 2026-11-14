@@ -121,3 +121,35 @@
 - 分数不要归一化成百分比再显示两位小数——`0.23` 就是 `0.23`，转了反而暴露精度噪声。
 
 **存储后端可观测**：`ingest` 返回体里的 `backend` 取值为 `chroma+local`（Chroma 容器可用，双写）或 `local`（Chroma 不可达，仅本地索引）。两种都能检索，功能一致；设置页若要显示"向量库：Chroma / 本地"，用这个字段，不要按容器是否存在猜。
+## 9. 任务调度事件 task_status(REQ-F-014)
+
+调度器每次改任务状态推一条 WS 消息（`manager.publish_threadsafe("task_status", data)`）：
+
+```json
+{"type": "task_status",
+ "data": {"task_no": "task-20261114-0007", "run_id": 12,
+          "from": "pending", "to": "dispatched", "reason": "dispatch",
+          "retry_count": 0, "score": 0.71,
+          "assigned_agent": "executor", "assigned_device": "k10-act-03"},
+ "ts": "2026-11-14T10:31:02"}
+```
+
+| 字段 | 说明 |
+| ---- | ---- |
+| `from` / `to` | 状态机的边。**任务页轨迹直接画这两个值**，不要自己推 |
+| `reason` | 机器可读的原因，见下表；前端不要按 reason 分支渲染，只用于排查 |
+| `retry_count` | 已在退避中的重试次数（0 表示首次执行） |
+| `score` | 派发时才有：PRD 10.3 的打分（2 位小数） |
+| `result.rejected` | 熔断拒绝时才有：`breaker_open`，附带 `retry_after_s` |
+
+`reason` 全集：`dispatch` / `timeout_{n}s` / `retry_armed` / `retry_due` / `retry_hold_offline`
+/ `retries_exhausted` / `breaker_open` / `rejected_breaker_open`。
+
+约定：
+
+- **`needs_human` 暂不在 MySQL 枚举里**（基座 `tasks.status` 只有 9 态）。验证器判出转人工时，
+  当前落 `failed` + `result_json.verdict="needs_human"`；等基座补枚举后改为直写 `needs_human`。
+  前端「转人工」紫色徽章**先按 `result_json.verdict` 判**，别等枚举；
+- 熔断拒绝落 `dead`（不是 `rejected`），显示「熔断拒绝 · 剩余 Ns」用 `result.retry_after_s`；
+- `retry_hold_offline` 的事件里 `from == to == "retrying"`，这是「挂着等设备」，不是 bug，
+  前端不要重复播一条"重试"动画。
