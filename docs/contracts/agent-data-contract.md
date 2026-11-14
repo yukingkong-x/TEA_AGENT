@@ -106,22 +106,47 @@ canceled：人工取消任何非终态任务
 
 ## 7. 画布执行事件(REQ-F-013)
 
-工作流引擎每推进一个节点推一条事件（WS），前端据此类点亮画布。四类，字段固定：
+工作流引擎每推进一个节点推一条事件（WS），前端据此类点亮画布。
 
-| type | 时机 | 字段 |
-| ---- | ---- | ---- |
-| `run_started` | 一轮执行开始 | `run_id` `wf_key` `trigger` `node_count` `ts` |
-| `node_started` | 节点开始 | `run_id` `node_id` `node_type` `name` `agent_key` `ts` |
-| `node_finished` | 节点结束 | `run_id` `node_id` `node_type` `name` `agent_key` `status` `output` `error` `degraded` `duration_ms` `ts` |
-| `run_finished` | 一轮执行结束 | `run_id` `status` `rounds` `duration_ms` `error` `ts` |
+**只有两类 WS 消息**，与基座 `core/ws_manager.WS_TYPES`（PRD 7.4 白名单）一致。
+用「类型 + 阶段字段」两元组区分开始与结束，一个 handler 就能处理：
+
+| type | 阶段字段 | 时机 | 字段 |
+| ---- | -------- | ---- | ---- |
+| `run_status` | `status="running"` | 一轮执行开始 | `run_id` `wf_key` `trigger` `node_count` `status` |
+| `node_state` | `state="started"` | 节点开始 | `run_id` `node_id` `node_type` `name` `agent_key` |
+| `node_state` | `state="finished"` | 节点结束 | `run_id` `node_id` `node_type` `name` `agent_key` `status` `output` `error` `degraded` `duration_ms` `tool_calls` `tokens_in` `tokens_out` |
+| `run_status` | `status="success"` \| `"failed"` | 一轮执行结束 | `run_id` `status` `rounds` `duration_ms` `error` |
+
+真实样本（跑一次默认工作流，14 节点共 28 条事件，`data` 里**不会有空对象**）：
+
+```json
+{"type": "run_status", "data": {"run_id": 1, "wf_key": "patrol_irrigation", "trigger": "manual",
+  "node_count": 14, "status": "running"}, "ts": 1794624925}
+{"type": "node_state", "data": {"run_id": 1, "node_id": "n2", "node_type": "agent", "name": "巡园播报",
+  "agent_key": "scout", "status": "done", "output": "【巡园播报】A区平均湿度 33%…", "error": "",
+  "degraded": false, "duration_ms": 812, "tool_calls": [], "tokens_in": 0, "tokens_out": 0,
+  "state": "finished"}, "ts": 1794624925}
+{"type": "run_status", "data": {"run_id": 1, "status": "success", "rounds": 1,
+  "duration_ms": 7314, "error": ""}, "ts": 1794624932}
+```
 
 约定：
 
-- `status`：节点取 `running` / `done` / `failed` / `skipped`，run 取 `running` / `success` / `failed`；
+- **`state` 与 `status` 不是一回事**：`state` 只出现在 `node_state` 上（`started`/`finished`），
+  `status` 只表达结果（节点 `running`/`done`/`failed`/`skipped`，run `running`/`success`/`failed`）。
+  按 `state` 点亮/熄灭节点，按 `status` 决定红绿；
 - **没走到的分支节点不会有任何事件**（如决策为 none 时 `n9/n10/n11` 全程静默），前端保持默认态，不要自己补动画；
-- **Self-Loop 会让同一个 `node_id` 出现多次** `node_started`/`node_finished`（验证官每轮都跑）。画布按到达顺序播，**不要按 `node_id` 去重**，轮次用 `run_finished.rounds` 或事件出现次数区分；
+- **Self-Loop 会让同一个 `node_id` 出现多次** `state=started`/`finished`（验证官每轮都跑）。画布按到达顺序播，**不要按 `node_id` 去重**，轮次用 `run_status` 结束事件的 `rounds` 或事件出现次数区分；
 - `degraded=true` 的 agent 节点按第 5 节显示降级徽章；
-- 顺序保证：`run_started` 一定第一个、`run_finished` 一定最后一个，每个 `node_started` 都有配对的 `node_finished`（含 end 节点）——据此可以让「卡在进行中」的节点永远有归宿。
+- `tool_calls` 与 `tokens_*` 是对话剧场折叠块的原料，画布不需要；
+- 顺序保证：`run_status` 的 `running` 一定第一个、`success`/`failed` 一定最后一个，每个 `state=started` 都有配对的 `state=finished`（含 end 节点）——据此可以让「卡在进行中」的节点永远有归宿；
+- **事件是扁平字段 + 基座信封**：引擎产出的字段与 `type` 同级，WS 上看到的才是 `{type, data, ts}` 三层。不要在前端再去 `data.data`。
+
+> 历史坑（已修，记下来防复发）：引擎原本发 `node_started`/`node_finished`/`run_started`/`run_finished`，
+> 不在 `WS_TYPES` 白名单里，每条事件都会打一条「未知 WS 消息类型」告警，且给 A 的文档写的是
+> `node_state`/`run_status`，两边对不上、前端匹配不上。现在统一以基座白名单为准，
+> `engine.WS_TYPE_OF` 单点翻译，并有测试 `test_event_names_match_base_ws_whitelist` 钉住。
 
 
 ## 8. 知识库检索结果与引用(REQ-F-020)
@@ -148,6 +173,8 @@ canceled：人工取消任何非终态任务
 - 分数不要归一化成百分比再显示两位小数——`0.23` 就是 `0.23`，转了反而暴露精度噪声。
 
 **存储后端可观测**：`ingest` 返回体里的 `backend` 取值为 `chroma+local`（Chroma 容器可用，双写）或 `local`（Chroma 不可达，仅本地索引）。两种都能检索，功能一致；设置页若要显示"向量库：Chroma / 本地"，用这个字段，不要按容器是否存在猜。
+
+
 ## 9. 任务调度事件 task_status(REQ-F-014)
 
 调度器每次改任务状态推一条 WS 消息（`manager.publish_threadsafe("task_status", data)`）：

@@ -11,7 +11,14 @@
 引擎不能反过来依赖基座;等基座合进来,由 `start_run` 的 deps 适配层接真库。
 
 事件契约(前端画布动画 REQ-F-013 依赖,详见 docs/contracts/agent-data-contract.md 第 7 节):
-run_started / node_started / node_finished / run_finished,四类。
+对外只有**两类** WS 消息,与基座 `core/ws_manager.WS_TYPES`(PRD 7.4 白名单)对齐:
+
+- `node_state`:`state` 取 `started` / `finished`,节点高亮与动画;
+- `run_status`:`status` 取 `running` / `success` / `failed`,执行进度。
+
+引擎内部仍用四个语义化名字(`run_started` / `node_started` / `node_finished` / `run_finished`)
+书写,由 `_fire` 集中翻译一次。这样两条好处:调用点读起来仍是「开始/结束」的原意;
+白名单只有基座一处权威,本模块不擅自扩 WS 类型(扩了会让每条事件刷一条未知类型告警)。
 """
 from __future__ import annotations
 
@@ -26,6 +33,22 @@ from app.workflow.expression import ExpressionError, evaluate_bool
 
 DECISION_RE = re.compile(r"本轮决策[：:]\s*(irrigate|none|escalate)")
 VERDICT_RE = re.compile(r"\b(success|failed|needs_human)\b")
+
+# 引擎内部事件名 → 基座 WS_TYPES 白名单里的消息类型（PRD 7.4）。
+# 集中在这里翻译，6 个 _fire 调用点保持语义化写法。
+WS_TYPE_OF = {
+    "run_started": "run_status",
+    "run_finished": "run_status",
+    "node_started": "node_state",
+    "node_finished": "node_state",
+}
+
+# 需要额外补的「阶段」字段：前端靠 (type, state|status) 两元组分辨开始/结束。
+_WS_STAGE_OF = {
+    "run_started": ("status", "running"),
+    "node_started": ("state", "started"),
+    "node_finished": ("state", "finished"),
+}
 
 
 class WorkflowError(RuntimeError):
@@ -46,6 +69,9 @@ class NodeRecord:
     output: str = ""
     error: str = ""
     degraded: bool = False
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    tokens_in: int = 0
+    tokens_out: int = 0
     duration_ms: int = 0
 
 
@@ -91,14 +117,29 @@ class WorkflowEngine:
 
     # ── 事件 ──
     def _fire(self, event: dict) -> None:
-        if self.emit is not None:
-            event.setdefault("ts", int(time.time() * 1000))
-            try:
-                result = self.emit(event)
-                if asyncio.iscoroutine(result):
-                    asyncio.get_running_loop().create_task(result)
-            except Exception:  # noqa: BLE001 推送失败不能拖垮执行
-                pass
+        """内部事件 → 基座 WS 形态（type 换成白名单类型 + 补阶段字段），再交给 emit。
+
+        翻译只在这一处做，调用点保持 `run_started` / `node_finished` 这类语义名。
+        注意这里是**扁平**结构：字段与 `type` 同级，没有再包一层 `data`——基座
+        `_envelope` 会包 `{type, data, ts}`，多包一层会让前端拿到 `data.data`。
+        """
+        if self.emit is None:
+            return
+        internal = event.get("type")
+        stage = _WS_STAGE_OF.get(internal)
+        if WS_TYPE_OF.get(internal):
+            event = dict(event)
+            event["type"] = WS_TYPE_OF[internal]
+            if stage is not None:
+                key, value = stage
+                event.setdefault(key, value)
+        event.setdefault("ts", int(time.time() * 1000))
+        try:
+            result = self.emit(event)
+            if asyncio.iscoroutine(result):
+                asyncio.get_running_loop().create_task(result)
+        except Exception:  # noqa: BLE001 推送失败不能拖垮执行
+            pass
 
     # ── 主入口 ──
     async def run(
@@ -213,6 +254,11 @@ class WorkflowEngine:
                 turn = await runner.run(node.get("input", ""), upstream=self._upstream(context, agent_key))
                 record.output = getattr(turn, "content", "") or ""
                 record.degraded = bool(getattr(turn, "degraded", False))
+                # 对话剧场要折叠展示的明细：工具调用与 token 用量都从 turn 透传出来，
+                # 引擎不解读内容，只负责搬运（解析归 wiring，落库归基座）。
+                record.tool_calls = list(getattr(turn, "tool_calls", None) or [])
+                record.tokens_in = int(getattr(turn, "tokens_in", 0) or 0)
+                record.tokens_out = int(getattr(turn, "tokens_out", 0) or 0)
                 context[agent_key] = record.output
                 self._extract(context, agent_key, record.output)
                 record.status = "done"
@@ -287,6 +333,8 @@ class WorkflowEngine:
                 "node_type": node_type, "name": record.name, "agent_key": record.agent_key,
                 "status": record.status, "output": record.output, "error": record.error,
                 "degraded": record.degraded, "duration_ms": record.duration_ms,
+                "tool_calls": record.tool_calls,
+                "tokens_in": record.tokens_in, "tokens_out": record.tokens_out,
             })
 
     # ── 小工具 ──

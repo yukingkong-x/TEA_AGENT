@@ -8,12 +8,14 @@ install_workflow()
 
 不接的话 `start_run` 会抛 `SeamNotReady` → 路由 503（这是设计好的：宁可不跑，不跑假的）。
 
-顺带补一个没人认领的缺口：**Agent 发言落库**。引擎只发 `node_finished` 事件，
+顺带补一个没人认领的缺口：**Agent 发言落库**。引擎发 `node_state`(state=finished) 事件，
 但 PRD 6.7 的对话剧场要的是 `agent_messages` 表 + `agent_message` WS 消息，所以这里
-在 emit 里把 agent 节点的产出同时落一行表、推一条消息。工具调用的明细（tool_calls_json）
-与引用（citations_json）目前引擎不携带，留空并记 warning——这两项属于以后补的增强。
+在 emit 里把 agent 节点的产出同时落一行表、推一条消息；`tool_calls_json` 与
+`citations_json` 也从事件里带上（引擎负责搬运 turn 的明细，这里负责解析与落库）。
 """
 from __future__ import annotations
+
+import json
 
 import importlib
 import os
@@ -148,15 +150,62 @@ def _update_run(run_id: int, status: str, context: dict, error: Optional[str]) -
 
 # ─────────────────────────── WS / 对话剧场 ───────────────────────────
 
+# 事件里属于「信封」的键：不放进 data 载荷。
+# `ts` 尤其要排除——引擎塞的是毫秒时间戳，基座 _envelope 会顶层再给一个秒级 ts，
+# 两个同名字段量纲不同，前端一定会混。
+_ENVELOPE_KEYS = frozenset({"type", "ts"})
+
+_WS_TYPES = frozenset({"run_status", "node_state", "agent_message"})
+
+
 def _emit(event: dict) -> None:
+    """引擎事件 → WS 广播 + Agent 发言落库。
+
+    引擎发的是**扁平**结构（字段与 type 同级）；基座的 `_envelope` 才负责包
+    `{type, data, ts}`。所以这里要把除信封外的所有字段收进 data，不能找 `data` 键
+    ——找它永远是 `{}`，`node_state` 的载荷会全空，`agent_messages` 也一行都落不下来。
+    """
     from app.core.ws_manager import manager
 
     msg_type = event.get("type")
-    data = event.get("data") or {}
+    data = event.get("data")
+    if not isinstance(data, dict):
+        data = {k: v for k, v in event.items() if k not in _ENVELOPE_KEYS}
+    if msg_type not in _WS_TYPES:      # pragma: no cover 白名单外的类型不该出现在这条链上
+        logger.warning("工作流事件类型 {} 不在 WS 白名单内，请检查 _fire 的映射", msg_type)
+
     manager.publish_threadsafe(msg_type, data)
 
-    if msg_type == "node_finished" and data.get("agent_key"):
+    if msg_type == "node_state" and data.get("state") == "finished" and data.get("agent_key"):
         _persist_agent_message(data)
+
+
+def _citations_of(tool_calls: list[dict]) -> list[int]:
+    """从工具调用里抽出被引用的知识库 doc_id（对话剧场引用脚标的落库源）。
+
+    只认 `query_knowledge`，且只取返回值里的 `doc_id`——`chunk_index` 不进库，
+    前端按返回顺序重新编号（见数据契约第 8 节）。
+    """
+    doc_ids: list[int] = []
+    for call in tool_calls or []:
+        if not isinstance(call, dict) or call.get("name") != "query_knowledge":
+            continue
+        payload = call.get("result") if "result" in call else call.get("output")
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except (TypeError, ValueError):
+                continue
+        if isinstance(payload, dict):
+            payload = payload.get("hits") or payload.get("results") or []
+        if not isinstance(payload, list):
+            continue
+        for hit in payload:
+            if isinstance(hit, dict) and hit.get("doc_id") is not None:
+                doc_id = int(hit["doc_id"])
+                if doc_id not in doc_ids:
+                    doc_ids.append(doc_id)
+    return doc_ids
 
 
 def _persist_agent_message(data: dict) -> None:
@@ -165,6 +214,8 @@ def _persist_agent_message(data: dict) -> None:
     from app.db import session_scope
     from app.models.agent_messages import AgentMessage
 
+    tool_calls = [c for c in (data.get("tool_calls") or []) if isinstance(c, dict)]
+    citations = _citations_of(tool_calls)
     try:
         with session_scope() as db:
             message = AgentMessage(
@@ -172,8 +223,10 @@ def _persist_agent_message(data: dict) -> None:
                 agent_key=str(data["agent_key"]),
                 role="assistant",
                 content=(data.get("output") or "")[:_MESSAGE_MAX_CHARS] or None,
-                tokens_in=0,
-                tokens_out=0,
+                tool_calls_json=tool_calls or None,
+                citations_json=citations or None,
+                tokens_in=int(data.get("tokens_in") or 0),
+                tokens_out=int(data.get("tokens_out") or 0),
                 latency_ms=int(data.get("duration_ms") or 0),
             )
             db.add(message)
@@ -188,6 +241,8 @@ def _persist_agent_message(data: dict) -> None:
             "content": data.get("output") or "",
             "degraded": bool(data.get("degraded")),
             "latency_ms": int(data.get("duration_ms") or 0),
+            "tool_calls": tool_calls,
+            "citations": citations,
             "ts": data.get("ts") or datetime.now().isoformat(),
         })
     except Exception as exc:  # noqa: BLE001 落库失败不能中断工作流
