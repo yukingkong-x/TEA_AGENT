@@ -3,7 +3,14 @@ import { ConfidenceGauge } from '../components/ReportGauges'
 import { Markdown } from '../components/Markdown'
 import { PageFrame } from '../components/PageFrame'
 import { ReportTrend } from '../components/ReportTrend'
-import { dailyMarkdown, formatAchievement, patrolRuns, type PatrolRound } from '../data/patrolReport'
+import {
+  dailyMarkdown,
+  formatAchievement,
+  formatDuration,
+  outcomeLabel,
+  patrolRuns,
+  type PatrolRound,
+} from '../data/patrolReport'
 import { CONFIDENCE_WEIGHTS, NEEDS_HUMAN_THRESHOLD, pct, raw01, weightedConfidence } from '../lib/units'
 
 /** 结果徽章：转人工 > 基线缺失 > 闭环/未达标 */
@@ -17,7 +24,7 @@ export function ReportPage() {
   const [runId, setRunId] = useState(patrolRuns[0].id)
   const [daily, setDaily] = useState<string | null>(null)
   const run = patrolRuns.find((item) => item.id === runId) ?? patrolRuns[0]
-  const latest = run.rounds[run.rounds.length - 1]
+  const latest = run.rounds.length ? run.rounds[run.rounds.length - 1] : null
 
   return (
     <PageFrame title="验证报告">
@@ -42,26 +49,47 @@ export function ReportPage() {
             </select>
           </label>
           <p className="text-sm text-mute">
-            {run.outcome}。第 {latest.round} 轮复测 {pct(latest.measured, 1)}，置信度 {pct(latest.confidence)}。
+            <span className="text-paper">{outcomeLabel(run.outcome)}</span>
+            {latest
+              ? `。第 ${latest.round} 轮复测 ${pct(latest.measured, 1)}，置信度 ${pct(latest.confidence)}。`
+              : '。这次没有验证记录，不判定是否达标。'}
           </p>
         </div>
 
-        <div className="grid items-stretch gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
-          <section className="rounded-2xl bg-[#F7F8FA] px-4 py-4">
-            <h2 className="text-center text-paper">置信度</h2>
-            <ConfidenceGauge value={latest.confidence} caption={`第 ${latest.round} 轮`} />
+        {latest ? (
+          <div className="grid items-stretch gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
+            <section className="rounded-2xl bg-[#F7F8FA] px-4 py-4">
+              <h2 className="text-center text-paper">置信度</h2>
+              <ConfidenceGauge value={latest.confidence} caption={`第 ${latest.round} 轮`} />
+            </section>
+            <section className="min-w-0 rounded-2xl bg-[#F7F8FA] px-5 py-4">
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="text-paper">湿度轨迹</h2>
+                <p className="text-sm text-mute">浇水前到两轮复测</p>
+              </div>
+              {run.rounds.length >= 2 ? (
+                <ReportTrend />
+              ) : (
+                <p className="grid h-[280px] place-items-center text-sm text-mute">这次只有一轮，没有两轮湿度轨迹。</p>
+              )}
+            </section>
+          </div>
+        ) : (
+          // outcome=unverified：run 收尾了但验证官没出记录，页面不画空圆环、不写 0%
+          <section className="rounded-2xl border border-[#E8D9A8] bg-[#FFF9E8] px-5 py-6">
+            <h2 className="text-paper">⚠️ 未产生验证结果</h2>
+            <p className="mt-2 max-w-[64ch] text-sm leading-relaxed text-dim">
+              这次运行已经结束，但没有任何验证记录，所以没有基线 / 复测读数，也算不出达成率与置信度。流程跑通不等于浇水达标，这里不写「闭环成功」，也不画 0% 的绿环。
+            </p>
+            <p className="mt-2 max-w-[64ch] text-sm leading-normal text-mute">
+              常见原因：本轮决策为暂不作业（走归档分支）、设备回执未完成或熔断导致没有复测读数、渗透期不足 90 秒。
+            </p>
           </section>
-          <section className="min-w-0 rounded-2xl bg-[#F7F8FA] px-5 py-4">
-            <div className="flex items-center justify-between gap-3">
-              <h2 className="text-paper">湿度轨迹</h2>
-              <p className="text-sm text-mute">浇水前到两轮复测</p>
-            </div>
-            {run.id === 'run-1001' ? <ReportTrend /> : <p className="grid h-[280px] place-items-center text-sm text-mute">这次只有一轮，没有两轮湿度轨迹。</p>}
-          </section>
-        </div>
+        )}
 
-        {run.rounds.map((round) => (
-          <RoundBlock key={round.round} round={round} />
+        {run.rounds.map((round, index) => (
+          // round_no 由后端任务载荷决定，两轮理论上不会重号，但补 index 兜底
+          <RoundBlock key={`${round.round}-${index}`} round={round} />
         ))}
 
         <section className="rounded-2xl bg-[#F7F8FA] px-5 py-4">
@@ -170,7 +198,7 @@ function RoundBlock({ round }: { round: PatrolRound }) {
       <div className="flex items-center gap-4">
         <div className="min-w-0 flex-1">
           <h2 className="text-paper">第 {round.round} 轮</h2>
-          <dl className="mt-4 grid gap-3 sm:grid-cols-2">
+          <dl className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <div className="rounded-xl bg-panel px-3 py-3">
               <dt className="text-xs leading-none text-mute">基线</dt>
               {/* baseline 可能为 null（传感器没给浇水前读数），显示「—」，别 ?? 0 */}
@@ -183,6 +211,11 @@ function RoundBlock({ round }: { round: PatrolRound }) {
             <div className="rounded-xl bg-panel px-3 py-3">
               <dt className="text-xs leading-none text-mute">达成率</dt>
               <dd className="num mt-1 text-base text-paper">{formatAchievement(round)}</dd>
+            </div>
+            <div className="rounded-xl bg-panel px-3 py-3">
+              {/* duration_s 是真值（后端按 task_no 回查任务载荷）；没查到显示「—」，不写 0 秒 */}
+              <dt className="text-xs leading-none text-mute">浇水时长</dt>
+              <dd className="num mt-1 text-base text-paper">{formatDuration(round)}</dd>
             </div>
           </dl>
           <div className="mt-3 overflow-hidden rounded-xl border border-line bg-panel">
