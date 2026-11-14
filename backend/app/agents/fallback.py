@@ -12,12 +12,44 @@ agent_messages.content,前端识别前缀渲染黄条(见 docs/contracts/agent-d
 from __future__ import annotations
 
 import time
-from typing import Callable
+from typing import Any, Callable
 
 from app.agents.prompts import AGENTS
 
 # 降级输出前缀(前端据此显示「⚠️ 模型降级中」徽章,PRD 7.2)
 DEGRADED_PREFIX = "⚠️ 模型降级中\n"
+
+
+def _env_value(env_status: dict, key: str) -> Any:
+    """取环境读数:`core.queries.env_status` 给的是嵌套 `readings[metric].value`,
+    不是扁平的 `temperature_c`。原来只认扁平键 → 降级播报抛 KeyError 或播成「-」。"""
+    value = env_status.get(key)
+    if value is not None:
+        return value
+    readings = env_status.get("readings")
+    if isinstance(readings, dict):
+        item = readings.get(key)
+        if isinstance(item, dict):
+            return item.get("value", "-")
+        if item is not None:
+            return item
+    return "-"
+
+
+def _soil_value(soil_status: dict) -> Any:
+    """墒情:扁平 `soil_moisture` / `moisture` / 嵌套 `readings.soil_moisture.value` 都认。"""
+    for key in ("soil_moisture", "moisture"):
+        value = soil_status.get(key)
+        if value is not None:
+            return value
+    readings = soil_status.get("readings")
+    if isinstance(readings, dict):
+        item = readings.get("soil_moisture")
+        if isinstance(item, dict):
+            return item.get("value", "-")
+        if item is not None:
+            return item
+    return "-"
 
 
 def scout_fallback(env_status: dict, soil_status: dict, now_text: str = "") -> str:
@@ -26,19 +58,31 @@ def scout_fallback(env_status: dict, soil_status: dict, now_text: str = "") -> s
         now_text = time.strftime("%H:%M")
     return (
         f"【巡园播报】时间 {now_text}。A区:"
-        f"气温{env_status['temperature_c']}℃ 空气湿度{env_status['humidity_air']}% "
-        f"光照{env_status['lux']}lux "
-        f"土壤湿度{soil_status['soil_moisture']}%(趋势:{soil_status.get('trend', '平')})。\n"
+        f"气温{_env_value(env_status, 'temperature_c')}℃ "
+        f"空气湿度{_env_value(env_status, 'humidity_air')}% "
+        f"光照{_env_value(env_status, 'lux')}lux "
+        f"土壤湿度{_soil_value(soil_status)}%(趋势:{soil_status.get('trend', '平')})。\n"
         f"(规则降级输出:纯数据拼接,无模型判断)"
     )
 
 
 def decision_fallback(
-    soil_moisture: float,
+    soil_moisture: float | None,
     has_rain_alert: bool = False,
     has_frost_alert: bool = False,
 ) -> str:
-    """决策官降级:硬编码决策树(PRD 20.2)。"""
+    """决策官降级:硬编码决策树(PRD 20.2)。
+
+    `soil_moisture is None` 必须 escalated,不能当 100%:
+    原来缺省 100.0 → 「墒情不缺水」→ 永远 none、一个任务都不建,而且画面上
+    看不出是「没数据」;降级演示一按就成了一条永远不动的流水线。
+    """
+    if soil_moisture is None:
+        return (
+            "【决策】本轮决策:escalate。\n"
+            "方案:本轮不下发指令,转人工确认。\n"
+            "依据:规则模板(模型降级)——本轮无可用墒情数据,不能凭猜测浇水。"
+        )
     if soil_moisture < 40 and not has_rain_alert and not has_frost_alert:
         return (
             "【决策】本轮决策:irrigate。\n"
@@ -65,7 +109,8 @@ FALLBACKS: dict[str, Callable[[dict], str]] = {
         ctx.get("soil_status") or {"soil_moisture": "-", "trend": "平"},
     ),
     "decision": lambda ctx: decision_fallback(
-        soil_moisture=ctx.get("soil_moisture", 100.0),
+        # 不要 100.0 缺省:没数据就是没数据,模板要判 escalate 而不是「墒情适宜」
+        soil_moisture=ctx.get("soil_moisture"),
         has_rain_alert=ctx.get("has_rain_alert", False),
         has_frost_alert=ctx.get("has_frost_alert", False),
     ),
