@@ -125,6 +125,32 @@ def test_ack_flow_reaches_success(two_sessions):
     assert final.result_json["result"] == "done"
 
 
+def test_ack_refreshes_updated_at_even_when_status_unchanged(two_sessions):
+    """重复的 received 回执（状态已经是 running）也要刷新 updated_at。
+
+    调度器用 `updated_at + timeout_s` 判超时。状态没变时 SQLAlchemy 不会发 UPDATE，
+    `onupdate` 也就不触发 → 真机慢但一直在回执的任务会被判超时，触发一次假重试。
+    """
+    from datetime import datetime, timedelta
+
+    a, b = two_sessions
+    result = command.send_cmd(a, ACT, "pump", {"duration_s": 30}, issued_by="api:manual")
+    task_no = result["task_no"]
+
+    task = b.scalar(select(Task).where(Task.task_no == task_no))
+    task.status = "running"
+    task.updated_at = datetime.now() - timedelta(seconds=120)
+    b.commit()
+
+    command.handle_ack(b, {"task_id": task_no, "device_id": ACT, "stage": "received", "result": "done"})
+    b.commit()
+    b.expire_all()
+
+    fresh = b.scalar(select(Task).where(Task.task_no == task_no))
+    assert fresh.status == "running"
+    assert (datetime.now() - fresh.updated_at).total_seconds() < 5, "回执没刷新 updated_at，会被误判超时"
+
+
 def test_ack_for_unknown_task_does_not_crash(two_sessions):
     """设备报了个库里没有的 task_no：只广播、不落库、不能抛异常。"""
     _, b = two_sessions

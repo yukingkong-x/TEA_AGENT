@@ -8,11 +8,13 @@ from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
+from loguru import logger
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import seams
 from ..db import get_db
+from ..models.tasks import Task
 from ..models.verifications import Verification
 from ._common import page_payload
 
@@ -39,10 +41,50 @@ def to_dict(v: Verification) -> dict[str, Any]:
     }
 
 
-@router.post("/{task_no}", summary="对某任务执行验证（调队长验证引擎）")
-def verify(task_no: str) -> dict[str, Any]:
+# 验证结论 → 任务终态。needs_human 是终态（PRD 10.2），不进调度器的扫描集，不会被自动重试。
+_VERDICT_TO_STATUS = {"success": "success", "failed": "failed", "needs_human": "needs_human"}
+
+
+def _apply_verdict(db: Session, task_no: str, result: dict[str, Any] | None) -> str | None:
+    """把验证结论落成任务终态。
+
+    为什么由这里写：验证引擎是依赖注入式的、不碰 ORM（队长那条线刻意不 import 基座的
+    models），所以「任务状态谁改」只能落在基座这一层。不写的话任务会一直停在 running，
+    60s 后调度器判超时 → 重试 → 再次超时，形成一轮假的自我重试，大屏上看起来像在反复失败。
+    """
+    verdict = str((result or {}).get("verdict") or "").strip().lower()
+    status = _VERDICT_TO_STATUS.get(verdict)
+    if status is None:
+        return None
+
+    task = db.scalar(select(Task).where(Task.task_no == task_no))
+    if task is None:
+        return None
+
+    task.status = status
+    # 合并而非覆盖：result_json 里可能已有 ack 明细（指令结果），验证结论是增量信息
+    merged = dict(task.result_json or {})
+    merged.update(
+        {
+            "verdict": verdict,
+            "verification_id": (result or {}).get("verification_id"),
+            "achievement": (result or {}).get("achievement"),
+            "confidence": (result or {}).get("confidence"),
+            "note": (result or {}).get("note"),
+        }
+    )
+    task.result_json = merged
+    db.commit()
+    return status
+
+
+@router.post("/{task_no}", summary="对某任务执行验证（调队长验证引擎）并回写任务终态")
+def verify(task_no: str, db: Session = Depends(get_db)) -> dict[str, Any]:
     result = seams.verify_task(task_no)
-    return {"task_no": task_no, "result": result}
+    applied = _apply_verdict(db, task_no, result)
+    if applied:
+        logger.info("验证 {} → 任务终态 {}", task_no, applied)
+    return {"task_no": task_no, "result": result, "task_status": applied}
 
 
 @router.get("", summary="验证记录列表（红/黄/绿圆环的数据源）")

@@ -106,10 +106,23 @@ def list_docs(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
     return [_doc_dict(r) for r in rows]
 
 
-@router.delete("/{doc_id}", summary="删除文档记录（向量库里请走 loader.delete）")
+@router.delete("/{doc_id}", summary="删除文档记录并清理向量索引")
 def delete_doc(doc_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
     doc = db.get(KnowledgeDoc, doc_id)
     ensure_found(doc, f"文档 {doc_id}")
+
+    # 先清向量、再删记录：反过来的话中途失败会留下「记录没了、向量还在」的孤儿，
+    # 检索仍会命中一份打不开的文档，而且再也没有接口能清掉它。
+    # 向量清理失败不阻断删除（记录是用户明确要删的），但要在返回值和日志里留痕。
+    vectors: int | str = 0
+    try:
+        from ..knowledge.loader import delete as delete_vectors
+
+        vectors = int(delete_vectors(doc_id).get("removed", 0) or 0)
+    except Exception as exc:  # noqa: BLE001 知识库模块缺失/索引不可用时降级
+        logger.warning("文档 {} 的向量清理失败（记录仍会删除，索引可能残留）：{}", doc_id, exc)
+        vectors = "failed"
+
     db.delete(doc)
     db.commit()
-    return {"deleted": doc_id}
+    return {"deleted": doc_id, "vectors_removed": vectors}

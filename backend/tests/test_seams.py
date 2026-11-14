@@ -27,8 +27,14 @@ def _clean_sys_modules():
             sys.modules.pop(name, None)
 
 
-def test_not_ready_is_503_kind_error():
+def test_not_ready_is_503_kind_error(monkeypatch):
+    """「对面还没落地」这条路径必须显式构造，不能靠「本分支恰好没有那个模块」。
+
+    两支合并后模块就在，靠环境缺席的用例会突然变红，然后被人「修」成 skip——
+    降级逻辑反而没人守了。这里直接把候选指到一个不存在的模块。
+    """
     seam = "search"
+    monkeypatch.setitem(seams._CANDIDATES, seam, (("app.__absent_kb__.retriever", "search"),))
     with pytest.raises(seams.SeamNotReady) as ei:
         seams.search("土壤湿度趋势", 3)
     assert ei.value.seam == seam
@@ -85,6 +91,18 @@ def test_generate_report_accepts_plain_int():
     assert seams.generate_report(3) == 42
 
 
-def test_validate_dag_returns_none_when_absent():
+def test_validate_dag_returns_none_when_absent(monkeypatch):
     """没有引擎校验时返回 None，让调用方用自己的闸门（不能返回 []，否则等于放行一切）。"""
+    monkeypatch.setitem(seams._CANDIDATES, "validate_dag", (("app.__absent_wf__.engine", "validate_dag"),))
+    assert seams.validate_dag({"nodes": []}) is None
+
+
+def test_validate_dag_degrades_when_engine_raises(monkeypatch):
+    """引擎校验器自己崩了也要回退到 None——画布保存不能因为对面一个异常就 500。"""
+
+    def boom(_dag):
+        raise RuntimeError("引擎校验炸了")
+
+    _fake_module("app.workflow.engine", validate_dag=boom)
+    monkeypatch.setitem(seams._CANDIDATES, "validate_dag", (("app.workflow.engine", "validate_dag"),))
     assert seams.validate_dag({"nodes": []}) is None

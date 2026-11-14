@@ -165,4 +165,81 @@ WS 消息统一：`{"type": "...", "data": {...}, "ts": 1730700000}`，type ∈
 | 2026-11-14 | 容器内全量测试 `docker compose run --rm --no-deps backend pytest -q` | **55 passed in 3.67s**，容器 Python **3.11.18**（镜像 python:3.11-slim） |
 | 2026-11-14 | 宿主 venv 交叉验证（Python 3.13） | 55 passed —— 与容器的 3.11 无差异，说明代码未踩版本特性 |
 | 2026-11-14 | 依赖跨版本可解析性 `pip install --dry-run --python-version 3.11 --only-binary=:all:` | 50 个包全部有 wheel，无源码编译依赖 |
+| 2026-11-14 晚 | 六接缝接线后容器内全量测试 | **71 passed**，容器 Python 3.11.18（宿主 3.13 同结果） |
+| 2026-11-14 晚 | 启动实测 `/api/health` | `status: ok`，`seams` 六项全 `ready`，调度器 1s 一轮，默认工作流 1 条（连续重启两次不重复写） |
+| 2026-11-14 晚 | 老库枚举升级 | 启动日志 `tasks.status 枚举已补齐：needs_human`；二次重启无该行（幂等） |
+| 2026-11-14 晚 | 指令→回执→终态 | `pump 30s` 下发后 `dispatched→running→success`，`result_json` 落 `executed_s=30.0`、`moisture_gain=10.5` |
+| 2026-11-14 晚 | 触发执行 `POST /api/workflows/3/run` | 返回 `run_id`，run 状态 `success`，context 里 6 个 agent 输出齐全（无 key 走规则降级） |
+| 2026-11-14 晚 | 掩码回传保护（实测） | 写入真 key → PUT 回 `sk-r****1234` → 库里明文仍是原 key |
 
+
+## 六、六接缝接线后的基座侧改动（2026-11-14 晚）
+
+队长把 `workflow/` `verification/` `orchestrator/` `knowledge/` 全部落地后，基座只需接线；
+以下是这一轮动的全部内容，逐条注明理由。
+
+### 6.1 `app/bootstrap.py`：三行接线，但**不用顶部 import**
+
+```python
+_install("工作流引擎",   ".workflow.wiring",       "install")
+_install("验证引擎",     ".verification.wiring",   "install")
+_install("任务调度器",   ".orchestrator.wiring",   "start_scheduler")
+# stop_all() 里先 _install(... "stop_scheduler")
+```
+
+队长给的写法是模块顶部 `from .workflow.wiring import install`。我改成函数内 `importlib` +
+`try/except`，原因只有一个：**顶部 import 缺模块会让 `app.main` 直接导入失败**，连
+`/api/health` 都打不开，现场只能看到容器重启循环。放这里，缺模块只表现为该接缝 503 +
+health 里 `not_ready`，还能从日志里看到原因。三个 install/start 自身幂等，重复调用无副作用
+（已实测连续重启两次，默认工作流仍只有 1 条）。
+
+顺序：引擎（含首启写默认工作流）→ 验证（要读任务/样本）→ 调度器（1s 一跑，最后开）。
+
+### 6.2 `tasks.status` 补 `needs_human` + 老库自动 ALTER
+
+`create_all` 只建表不改列，**已经存在的库改 models 不生效**。`db.init_db()` 里加
+`_sync_enum_column()`：查 `information_schema` 比对枚举值，缺才 `ALTER`，非 MySQL 静默跳过。
+演示机上是老库，不补会报 `Data truncated for column 'status'`——而且只在验证器转人工那一刻出现。
+
+配套：`POST /api/verify/{task_no}` 现在**把验证结论落成任务终态**
+（`success/failed/needs_human`）。理由：验证引擎是依赖注入式的、不碰 ORM，如果没有这一层，
+任务会一直停在 `running`，60s 后被调度器判超时 → 重试 → 再超时，形成一轮假重试。
+`result_json` 是**合并**写入，不覆盖已有的 ack 明细。
+
+### 6.3 `DELETE /api/knowledge/{doc_id}` 清向量
+
+先 `app.knowledge.loader.delete(doc_id)` 再删记录（反过来会留下"记录没了、向量还在"的孤儿，
+检索仍会命中，且没有接口能再清）。向量清理失败不阻断删除，返回 `vectors_removed: "failed"`
+并在日志留痕——记录是用户明确要删的，不该因为向量库抖动而删不掉。
+
+### 6.4 设备 ack 刷新 `tasks.updated_at`
+
+`handle_ack` 末尾显式写 `updated_at`。调度器用 `updated_at + timeout_s` 判超时；只改 status 时
+若状态恰好没变（重复的 `received→running`），SQLAlchemy 不发 UPDATE、`onupdate` 不触发，
+真机慢但一直在回执的任务会被误判超时。已用用例 `test_ack_refreshes_updated_at_even_when_status_unchanged`
+钉住（去掉这行赋值立刻红）。
+
+### 6.5 已知问题（队长侧，未修，会影响队友 A 的对话剧场）
+
+**引擎事件是扁平结构，`workflow/wiring.py::_emit` 按 `{"type","data"}` 取，导致 `data` 恒为空。**
+
+```
+engine.py: self._fire({"type": "node_finished", "run_id", "node_id", "agent_key", "output", ...})   # 扁平
+wiring.py: data = event.get("data") or {}        # 取不到 → {}
+           if msg_type == "node_finished" and data.get("agent_key"):  # 永远不成立
+```
+
+实测：跑一次默认工作流，引擎发出 22 个事件，`agent_messages` 表 **0 行**，
+WS 收到的 `node_started/node_finished` 载荷全是 `{}`。`_persist_agent_message` 本身可用
+（直接调用能落库），只是永远调不到。修法二选一：
+
+```python
+# 方案 A（改 wiring，3 行，推荐）
+def _emit(event: dict) -> None:
+    data = event.get("data") or {k: v for k, v in event.items() if k != "type"}
+# 方案 B（改 engine）：_fire 里统一包一层 {"type": t, "data": {...}}
+```
+
+另外事件名也对不上契约：引擎发 `node_started/node_finished/run_started/run_finished`，
+而 `docs/contracts/frontend_handoff.md` 给 A 的是 `node_state/run_status/agent_message`。
+两队统一之前，前端这三种事件拿到的是空 `data`，**不要按它做节点高亮**。

@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime
 from typing import Any, Callable
 
 from loguru import logger
@@ -209,6 +210,11 @@ def handle_ack(db: Session, payload: dict[str, Any]) -> dict[str, Any]:
         status = "unknown"
 
     if task is not None:
+        # 心跳式刷新 updated_at：调度器用 `updated_at + timeout_s` 判超时
+        # （orchestrator/scheduler.py::_scan_timeouts）。只改 status 时，若状态恰好没变
+        # （例如重复的 received→running 回执），SQLAlchemy 不会发 UPDATE，`onupdate`
+        # 也就不会触发 —— 真机慢但一直有回执的任务会被判超时并触发一次假重试。
+        task.updated_at = datetime.now()
         db.flush()
 
     manager.publish_threadsafe(

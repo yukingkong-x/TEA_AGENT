@@ -60,13 +60,52 @@ def session_scope() -> Iterator[Session]:
         db.close()
 
 
+def _sync_enum_column(table: str, column: str, values: tuple[str, ...], default: str | None = None) -> bool:
+    """把 MySQL 原生 ENUM 列补齐到 `values`（只增不删，幂等）。
+
+    为什么需要它：`create_all` 只 CREATE 不 ALTER，**已经存在的库改 models 不会生效**。
+    演示机上的库是上一版建的，`tasks.status` 少一个 `needs_human`，验证器一转人工就报
+    `Data truncated for column 'status'`——这种错误只会在现场那一刻出现，最容易被当成别的问题。
+    比赛期不引 Alembic（PRD 3.2 的取舍），就这一处按需 ALTER，比整库迁移稳。
+
+    只在实际缺值时执行 ALTER；非 MySQL 或表还没建时静默跳过（SQLite 测试库走这条）。
+    """
+    try:
+        with engine.begin() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT COLUMN_TYPE FROM information_schema.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :t AND COLUMN_NAME = :c"
+                ),
+                {"t": table, "c": column},
+            ).first()
+            if row is None:
+                return False
+            current = str(row[0] or "")
+            missing = [v for v in values if f"'{v}'" not in current]
+            if not missing:
+                return False
+            ddl = ", ".join(f"'{v}'" for v in values)
+            tail = f" NOT NULL DEFAULT '{default}'" if default else ""
+            conn.execute(text(f"ALTER TABLE {table} MODIFY COLUMN {column} ENUM({ddl}){tail}"))
+        logger.info("{}.{} 枚举已补齐：{}", table, column, ", ".join(missing))
+        return True
+    except Exception as exc:  # noqa: BLE001 同步失败不该挡住启动
+        logger.warning("{}.{} 枚举同步失败（写入 {} 可能被 MySQL 截断）：{}", table, column, values[-2:], exc)
+        return False
+
+
 def init_db() -> None:
     """建表（幂等）。比赛期不引 Alembic：表结构变更靠 models 改 + create_all。"""
     from . import models  # noqa: F401  必须导入，触发全部表注册到 metadata
     from .models.base import Base
+    from .models.tasks import TASK_STATUS
 
     Base.metadata.create_all(bind=engine)
     logger.info("数据库建表完成：{} 张表", len(Base.metadata.tables))
+
+    # 老库补列（create_all 覆盖不到的部分）。新库这里直接 return False，无额外开销。
+    _sync_enum_column("tasks", "status", TASK_STATUS, default="pending")
 
 
 def ping() -> bool:
