@@ -236,3 +236,40 @@ canceled：人工取消任何非终态任务
   （浇水后读数大跌时先怀疑数据，而不是继续补水）；
 - `reasons` 是给人看的解释，报告页与任务详情直接列，不要改写成别的措辞；
 - `correction` 为 `null` 表示本轮无需修正（已成功 / 已转人工 / 轮次用尽）。
+
+
+## 11. 任务轨迹 task_events(REQ-F-015)
+
+PRD 986 行要求「点击行展开轨迹抽屉（pending→dispatched→running→…**每次状态变更时间戳**）」。
+`tasks` 表只有 `created_at`/`updated_at`，中间态推不出来；`task_status` 的 WS 推送又只在
+内存里，刷新即失。所以每次状态变更落一行 `task_events`。
+
+**接口** `GET /api/tasks/{task_no}/events?limit=100`（B 实现）：
+
+```json
+{"items": [
+  {"id": 31, "event": "task_status", "from": "pending", "to": "dispatched",
+   "reason": "dispatch", "actor": "scheduler", "at": "2026-11-14T10:31:02", "payload": {"score": 0.71}},
+  {"id": 34, "event": "task_status", "from": "dispatched", "to": "running",
+   "reason": "ack", "actor": "device", "at": "2026-11-14T10:31:03", "payload": null}
+ ], "total": 6}
+```
+
+| 字段 | 说明 |
+| ---- | ---- |
+| `from` / `to` | 状态机的边，**直接画**，不要自己推下一跳 |
+| `reason` | 机器可读原因（全集见第 9 节）；只用于排查，不要按它分支渲染 |
+| `actor` | 谁触发的：`scheduler` / `device` / `verifier` / `human` |
+| `at` | **`isoformat()` 带 `T`**，不要用 `isoformat(sep=" ")`——Safari 会把带空格的串解析成 `Invalid Date` |
+| `payload` | 原始事件载荷，`_truncated=true` 时只剩状态字段（长文本在 `agent_messages` 里） |
+
+约定：
+
+- 按 `at` **升序**画时间轴（接口已按 id 升序返回，直接用）；
+- **不要按 `from`/`to` 相同的相邻行去重**——后端已经去过重了（`retry_hold_offline`
+  每 tick 发一条，设备离线 5 分钟就是 300 行）。前端看到重复就是后端 bug，报给 B；
+- 状态徽章配色用第 3 节那张表，与任务列表保持一致；
+- 轨迹最后一行不一定是终态（任务还在跑），不要用最后一行反推任务当前状态，**要读 `task.status`**。
+
+> 落库侧：`orchestrator/events.py` 拼装 + `orchestrator/wiring._emit` 写入，
+> 表未建时静默跳过（加分项缺表不能让调度停摆）。
