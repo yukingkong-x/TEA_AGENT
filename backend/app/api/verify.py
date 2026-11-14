@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import seams
+from ..core import task_trail
 from ..db import get_db
 from ..models.tasks import Task
 from ..models.verifications import Verification
@@ -61,6 +62,7 @@ def _apply_verdict(db: Session, task_no: str, result: dict[str, Any] | None) -> 
     if task is None:
         return None
 
+    prev_status = task.status
     task.status = status
     # 合并而非覆盖：result_json 里可能已有 ack 明细（指令结果），验证结论是增量信息
     merged = dict(task.result_json or {})
@@ -74,6 +76,25 @@ def _apply_verdict(db: Session, task_no: str, result: dict[str, Any] | None) -> 
         }
     )
     task.result_json = merged
+    # 轨迹：这是「验证官改了任务终态」这一跳的落点。event 用 verify 而不是 task_status，
+    # 因为抽屉要一眼看出「这条是判出来的，不是调度器派发的」；reason 存 verdict，
+    # 前端仍按 from/to 画边（见契约第 11 节）。
+    task_trail.record(
+        db,
+        task_no=task.task_no,
+        event="verify",
+        from_status=prev_status,
+        to_status=status,
+        reason=verdict,
+        actor="verifier",
+        run_id=task.run_id,
+        payload={
+            "verification_id": merged.get("verification_id"),
+            "achievement": merged.get("achievement"),
+            "confidence": merged.get("confidence"),
+            "note": merged.get("note"),
+        },
+    )
     db.commit()
     return status
 

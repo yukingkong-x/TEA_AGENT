@@ -217,3 +217,28 @@ def test_trail_never_raises_when_table_missing(tmp_path):
         assert session.scalar(select(func.count()).select_from(Task)) == 0
     finally:
         session.close()
+
+
+def test_verdict_lands_terminal_status_and_verify_event(db):
+    """验证结论落终态时补一行 `event=verify` 的轨迹（actor=verifier）。
+
+    抽屉要能区分「调度器派发的」和「验证官判出来的」，所以 event 不用 task_status。
+    这条同时钉住「验证不再留下 running 孤儿」——没有这一层，任务会一直 running，
+    60s 后被调度器判超时、重试、再超时，大屏上像在反复失败。
+    """
+    pytest.importorskip("app.orchestrator.events")
+
+    from app.api.verify import _VERDICT_TO_STATUS, _apply_verdict
+
+    baseline = _events(db)["total"]
+    status = _apply_verdict(db, TASK_NO, {"verdict": "failed", "confidence": 71.5, "note": "湿度未达标"})
+
+    assert status == _VERDICT_TO_STATUS["failed"] == "failed"
+    items = _events(db)["items"]
+    assert len(items) == baseline + 1
+    last = items[-1]
+    assert (last["event"], last["to"], last["reason"], last["actor"]) == ("verify", "failed", "failed", "verifier")
+    assert last["payload"]["confidence"] == 71.5
+
+    # result_json 是合并写入：不能把已有的 ack 明细冲掉
+    assert db.get(Task, 1).result_json["verdict"] == "failed"
