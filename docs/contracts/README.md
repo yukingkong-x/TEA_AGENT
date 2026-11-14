@@ -10,6 +10,7 @@
 
 | 日期 | 改了哪条 | 谁同意的 |
 | ---- | -------- | -------- |
+| 2026-11-14 | 新增 `GET /api/tasks/{task_no}/events`(REQ-F-015 轨迹抽屉):`{items:[{id,event,from,to,reason,actor,at,payload}],total}`。`at` **必须是 `isoformat()` 带 `T`**(Safari 不认 `sep=" "`),后端已按 `event+from+to+reason` 去重 | 队长定,A 照此渲染时间轴,B 实现路由 |
 | 2026-11-14 | **画布事件名统一到基座白名单**:WS 只有 `node_state`(`state`=started/finished) 与 `run_status`(`status`=running/success/failed) 两类,引擎内部的 `node_started`/`node_finished`/`run_started`/`run_finished` 由 `engine.WS_TYPE_OF` 单点翻译。原实现发四个内部名,不在 `WS_TYPES` 里,每条事件刷一条「未知 WS 消息类型」告警,且与给 A 的 `node_state`/`run_status` 对不上。**A 按本节的两元组写一个 handler 即可** | 队长定(以 PRD 7.4 白名单为准) |
 | 2026-11-14 | 新增调度事件 `task_status`(WS):`{task_no,run_id,from,to,reason,retry_count,score,assigned_agent,assigned_device}`,另 `result.rejected=breaker_open`。**`tasks.status` 枚举缺 `needs_human`**(PRD 10.2/11.3 要),补之前前端按 `result_json.verdict` 判转人工徽章 | 队长定,B 补枚举 |
 | 2026-11-14 | 知识库检索口径:`search` 返回 `{title, chunk_text, score, doc_id, chunk_index}`,`score` 为稀疏余弦(0~1),有 **0.03 噪声地板**,空数组=未检索到属正常结果;`ingest` 返回体增 `backend`(`chroma+local`/`local`)与 `chars`,原 `chunk_count`/`chroma_ids` 不变 | 队长定,A 照此渲染引用 |
