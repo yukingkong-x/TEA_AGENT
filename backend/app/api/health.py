@@ -9,7 +9,7 @@ from .. import db, seams
 from ..config import get_settings
 from ..core import mqtt_client
 from ..core.redis_client import ping as redis_ping
-from ..core.runtime_settings import get_mode
+from ..core.runtime_settings import get_mode, get_secret
 from ..core.ws_manager import manager
 from ..mock.simulator import simulator
 
@@ -31,7 +31,8 @@ def health() -> dict:
         "mode": get_mode(),
         "simulator": simulator.running,
         "ws_clients": manager.client_count,
-        "llm_ready": settings.llm_ready,
+        # 与 GET /api/settings 同口径：设置页写入的 key 也算已配置
+        "llm_ready": bool(settings.llm_ready or get_secret("llm_api_key")),
         # 队长地盘的就绪情况：ready / 未就绪原因（相关接口返回 503）
         "seams": {k: ("ready" if v == "ready" else "not_ready") for k, v in seam_states.items()},
         "version": settings.app_version,

@@ -151,9 +151,17 @@ def generate_report(run_id: int) -> Any:
     return _invoke(_resolve("generate_report"), (run_id,), {"run_id": run_id})
 
 
-def ingest(path: str, doc_id: int) -> Any:
-    """切片 + 向量化入库。返回 {"chunk_count": int, "chroma_ids": [...]}。"""
-    return _invoke(_resolve("ingest"), (path, doc_id), {"path": path, "doc_id": doc_id})
+def ingest(path: str, doc_id: int, title: str | None = None) -> Any:
+    """切片 + 向量化入库。返回 {"chunk_count": int, "chroma_ids": [...]}。
+
+    title 是知识库文档的原标题（`KnowledgeDoc.title`）。不传时对面会退回
+    `Path(path).name`，那是 uploads 里的随机名，检索引用会显示成一串十六进制。
+    可选关键字：对面 ingest 若还是两参版本，_invoke 会按位置调，不会 TypeError。
+    """
+    kwargs = {"path": path, "doc_id": doc_id}
+    if title:
+        kwargs["title"] = title
+    return _invoke(_resolve("ingest"), (path, doc_id), kwargs)
 
 
 def search(question: str, top_k: int = 5) -> Any:

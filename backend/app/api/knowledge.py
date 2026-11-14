@@ -47,7 +47,10 @@ def _doc_dict(doc: KnowledgeDoc) -> dict[str, Any]:
 def _ingest_worker(doc_id: int, path: str) -> None:
     """后台线程跑切片入库，避免阻塞上传请求。"""
     try:
-        result = seams.ingest(path=path, doc_id=doc_id)
+        with session_scope() as db:
+            doc = db.get(KnowledgeDoc, doc_id)
+            title = doc.title if doc is not None else None
+        result = seams.ingest(path=path, doc_id=doc_id, title=title)
         chunk_count = int(result.get("chunk_count", 0)) if isinstance(result, dict) else 0
         with session_scope() as db:
             doc = db.get(KnowledgeDoc, doc_id)
