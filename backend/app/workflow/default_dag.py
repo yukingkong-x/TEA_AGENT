@@ -45,9 +45,14 @@ def default_dag() -> dict:
             {"id": "n11", "type": "agent", "agent_key": "verifier", "name": "验证审计",
              "input": "对刚完成的浇水任务执行复测验证,不达标启动Self-Loop修正。",
              "next": ["n11b"]},
+            # body 是「修正 → 再执行 → 再渗透 → 再验证」整段,不是只回验证官:
+            # run #28 实测 body=n11 时,三轮验证拿到的是同一批传感器数据(恒为 40.41%),
+            # 循环在画布上转了、物理世界一动不动,违背 PRD 11.4.2「生成新任务,回到
+            # 执行-验证循环」。修正单由引擎按验证层的 correction 建(engine._apply_correction)。
             {"id": "n11b", "type": "loop", "name": "Self-Loop", "max_iterations": 2,
-             "exit_expression": "context.last_verification == 'success' or context.round > 2",
-             "body_next": "n11", "next": ["n13"]},
+             # round >= 2 与 max_iterations 同口径(总轮次):一轮主验 + 一轮修正验证
+             "exit_expression": "context.last_verification == 'success' or context.round >= 2",
+             "body_next": "n9", "next": ["n13"]},
             {"id": "n12", "type": "agent", "agent_key": "verifier", "name": "无需作业归档",
              "input": "本轮决策为暂不作业,生成简要记录。", "next": ["n13"]},
             {"id": "n13", "type": "end", "name": "结束"},

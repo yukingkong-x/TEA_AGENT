@@ -174,6 +174,47 @@ def _update_run(run_id: int, status: str, context: dict, error: Optional[str]) -
             payload["error"] = error
         run.context_json = payload
         run.finished_at = datetime.now()
+        _persist_feedbacks(db, run_id, payload.get("feedbacks") or [])
+
+
+def _persist_feedbacks(db, run_id: int, feedbacks: list) -> None:
+    """把引擎算出的修正动作写进 feedback_logs（PRD 6.13 / 11.4.2 证据链）。
+
+    引擎不碰 ORM（它要能脱离基座单测），只在 context 里记 feedbacks；
+    落库这一步由接线层做，和 run_status / agent_messages 一样的模式。
+    同一 run 重跑（手工重放）时按 (run_id, round) 去重，不重复堆行。
+    """
+    if not isinstance(feedbacks, list) or not feedbacks:
+        return
+    from sqlalchemy import select
+
+    from app.models.feedback_logs import FeedbackLog
+
+    existing = {
+        int(row or 0)
+        for row in db.scalars(select(FeedbackLog.round).where(FeedbackLog.run_id == run_id)).all()
+    }
+    for item in feedbacks:
+        if not isinstance(item, dict):
+            continue
+        round_no = int(item.get("round") or 0) or 1
+        if round_no in existing:
+            continue
+        db.add(FeedbackLog(
+            run_id=run_id,
+            round=round_no,
+            failure_reason=str(item.get("reason") or "")[:500] or None,
+            correction_json={
+                "strategy": item.get("strategy"),
+                "duration_s": item.get("duration_s"),
+                "times": item.get("times"),
+                "interval_s": item.get("interval_s"),
+                "gap": item.get("gap"),
+                "from_task_no": item.get("from_task_no"),
+            },
+            next_task_no=(item.get("to_task_no") or None),
+        ))
+        existing.add(round_no)
 
 
 # ─────────────────────────── WS / 对话剧场 ───────────────────────────

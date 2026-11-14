@@ -377,3 +377,102 @@ async def test_executor_without_task_no_does_not_force_send():
 
     assert len(llm.calls) == 1
     assert registry.calls == []
+
+
+# ── 2026-11-14 队友B:schema 明摆着给 task_no,别只靠平台偷偷补 ──────────────
+
+def test_send_device_cmd_schema_exposes_optional_task_no():
+    """schema 里没有 task_no 时,模型即使知道该下发哪一单也传不进来。
+
+    以前只能靠 agents/base 在调用前偷偷补参数(基座再以「认领 dispatched 且无
+    dispatch 轨迹的单」兜底)。三者落到同一张单的前提是参数名一致 —— 所以字段
+    必须进 schema,且保持可选:老调用方(三个必填)与认领兜底都不受影响。
+    """
+    from app.agents.tools import build_default_registry
+
+    registry = build_default_registry()
+    schema = next(s for s in registry.to_openai_schemas()
+                  if s["function"]["name"] == "send_device_cmd")
+    params = schema["function"]["parameters"]
+
+    assert "task_no" in params["properties"]
+    assert params["properties"]["task_no"]["type"] == "string"
+    assert params["properties"]["task_no"].get("description")   # 模型得知道填什么
+    assert params["required"] == ["device_id", "action", "params"]
+
+
+@pytest.mark.asyncio
+async def test_explicit_task_no_from_model_is_not_overwritten():
+    """模型自己填了 task_no 就照它的(平台的 ContextVar 只是兜底,不是权威)。"""
+    from app.agents.context import reset_current_task_no, set_current_task_no
+
+    class CmdRegistry(Registry):
+        def to_openai_schemas(self):
+            return [{"type": "function",
+                     "function": {"name": "send_device_cmd", "description": "下发",
+                                  "parameters": {"type": "object", "properties": {}}}}]
+
+        async def invoke(self, name, params=None):
+            self.calls.append((name, dict(params or {})))
+            return {"published": True}
+
+    token = set_current_task_no("task-20261114-0011")
+    try:
+        llm = ChoiceLLM([
+            LLMResult(tool_calls=[ToolCall(
+                id="c1", name="send_device_cmd",
+                arguments={"device_id": "mock-k10-act-03", "action": "pump",
+                           "params": {"duration_s": 45},
+                           "task_no": "task-20261114-0099"},
+                arguments_raw='{}')]),
+            LLMResult(content="【执行反馈】已下发。"),
+        ])
+        registry = CmdRegistry()
+        await _runner("executor", llm, registry).run(task="下发")
+    finally:
+        reset_current_task_no(token)
+
+    assert registry.calls[0][1]["task_no"] == "task-20261114-0099"
+
+
+@pytest.mark.asyncio
+async def test_executor_uses_correction_duration_not_the_stale_one():
+    """Self-Loop 第 2 轮:模型照抄上一轮的 45s,修正单实际是 19.9s。
+
+    现场(run #29):修正单 payload 写 duration_s=19.9,执行管家下发时仍传 45,
+    设备真浇了 45 秒 —— 报告里两轮时长写得不一样,物理动作却一样,
+    达成率的证据链从这里就断了。时长和任务号一样,是引擎给的事实。
+    """
+    from app.agents.context import (reset_current_task_no, reset_pump_duration,
+                                    set_current_task_no, set_pump_duration)
+
+    class CmdRegistry(Registry):
+        def to_openai_schemas(self):
+            return [{"type": "function",
+                     "function": {"name": "send_device_cmd", "description": "下发",
+                                  "parameters": {"type": "object", "properties": {}}}}]
+
+        async def invoke(self, name, params=None):
+            self.calls.append((name, dict(params or {})))
+            return {"published": True}
+
+    task_token = set_current_task_no("task-20261114-0025")
+    pump_token = set_pump_duration(19.9)
+    try:
+        llm = ChoiceLLM([
+            LLMResult(tool_calls=[ToolCall(
+                id="c1", name="send_device_cmd",
+                arguments={"device_id": "mock-k10-act-03", "action": "pump",
+                           "params": {"duration_s": 45}},
+                arguments_raw='{}')]),
+            LLMResult(content="【执行反馈】已下发。"),
+        ])
+        registry = CmdRegistry()
+        await _runner("executor", llm, registry).run(task="下发修正单")
+    finally:
+        reset_pump_duration(pump_token)
+        reset_current_task_no(task_token)
+
+    sent = registry.calls[0][1]
+    assert sent["params"]["duration_s"] == 19.9      # 以修正单为准
+    assert sent["task_no"] == "task-20261114-0025"   # 任务号仍然是修正单那张

@@ -112,10 +112,12 @@ def test_self_loop_retries_when_verification_fails():
     harness = Harness(replies)
     result = harness.run()
 
-    assert result.status == "success"
-    # 主链验证 1 次 + max_iterations=2 的修正轮 2 次 = 3 次;退出表达式 round>2 兜底生效
-    assert harness.calls["verifier"] == 3
-    assert result.context["round"] == 3
+    # 未达标跑满轮次 → needs_human(PRD 11.4.3),不再「跑完就算成功」
+    assert result.status == "needs_human"
+    assert "转人工" in result.error
+    # max_iterations=2 是总轮次:主链 1 轮 + 修正 1 轮,不是 1+2
+    assert harness.calls["verifier"] == 2
+    assert result.context["round"] == 2
     assert result.context["last_verification"] == "failed"
 
 
@@ -529,3 +531,206 @@ def test_start_run_passes_context_provider_into_run():
 class _NoopRunner:
     async def run(self, task, upstream=None):
         return AgentTurn(agent_key="decision", content="【决策】本轮决策:none。")
+
+
+def test_start_run_binds_run_id_for_tool_layer(monkeypatch):
+    """run_id 跟着上下文走到工具层,不再依赖基座「唯一 running 才认」的兜底。
+
+    2026-11-14 队友B:create_task 落在工具层、send_cmd 落在设备层,两边都读
+    core/run_context 的 ContextVar;引擎不 set 时,同时跑两条 run 就分不清谁是谁,
+    tasks.run_id / verifications.run_id 只能记 NULL(报告页按 run 聚合全空)。
+    """
+    import asyncio
+    import sys
+    import types
+
+    from app.workflow import engine as engine_mod
+
+    calls: list[tuple[str, object]] = []
+    fake = types.ModuleType("app.core.run_context")
+    fake.set_current_run_id = lambda value: calls.append(("set", value)) or "run-token"
+    fake.reset_current_run_id = lambda token: calls.append(("reset", token))
+    monkeypatch.setitem(sys.modules, "app.core.run_context", fake)
+
+    observed: dict[str, object] = {}
+    recorded: dict[str, object] = {}
+
+    async def _fast_run(self, dag=None, run_id=None, trigger="manual", init_context=None):
+        observed["during"] = list(calls)
+        return engine_mod.RunResult(run_id=run_id, wf_key="k", status="success")
+
+    monkeypatch.setattr(engine_mod.WorkflowEngine, "run", _fast_run)
+    engine_mod.configure(engine_mod.EngineDeps(
+        load_workflow=lambda wf_id: prd_default_dag(),
+        create_run=lambda wf_id, trigger: 77,
+        update_run=lambda run_id, status, context, error: recorded.update({"run_id": run_id}),
+        agent_runner_factory=lambda key: FakeRunner(key, {}, REPLIES),
+        tool_invoke=lambda name, params: {},
+        emit=None,
+    ))
+
+    async def _scenario():
+        engine_mod.start_run(1, "manual")
+        for _ in range(50):
+            if recorded:
+                break
+            await asyncio.sleep(0.02)
+        await asyncio.sleep(0.05)   # 让 _drive 的 finally 跑完(reset 才算数)
+
+    try:
+        asyncio.run(_scenario())
+    finally:
+        engine_mod._deps = None
+
+    # run 执行期间 run_id 已经在上下文里,结束后复位(不把本轮带进下一次)
+    assert observed["during"] == [("set", 77)]
+    assert calls == [("set", 77), ("reset", "run-token")]
+
+
+# ── 2026-11-14 run #26:决策措辞换个说法就判错 ──────────────────────────
+
+def test_decision_worded_with_wei_still_irrigates():
+    """真模型写「本轮决策**为**irrigate」,旧正则只认冒号 → 分流走了「无需作业归档」。
+
+    现场(run #26):决策官正文明确说 irrigate、墒情 38% 也确实缺水,但 context
+    .last_decision 没提出来 → condition 判 false → 归档节点报「本轮无需作业」。
+    画布全绿、一滴水没浇,这是最难被发现的一种失败。
+    """
+    replies = dict(REPLIES)
+    replies["decision"] = "【决策】本轮决策为irrigate。方案:对A区执行浇水30秒，目标湿度55-65%。"
+    harness = Harness(replies)
+    result = harness.run()
+
+    assert result.context["last_decision"] == "irrigate"
+    assert result.record_of("n9").status == "done"        # 真的进灌溉分支
+    assert result.record_of("n12").status == "pending"    # 没误走归档
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("本轮决策:irrigate", "irrigate"),
+    ("本轮决策：irrigate", "irrigate"),
+    ("本轮决策为irrigate", "irrigate"),
+    ("本轮决策是 None", "None"),        # group 原样,大小写由调用方归一
+    ("本轮决策  irrigate", "irrigate"),
+])
+def test_decision_regex_accepts_natural_wording(text, expected):
+    from app.workflow.engine import DECISION_RE
+
+    found = DECISION_RE.search(f"【决策】{text}。方案:浇水30秒。")
+    assert found is not None
+    assert found.group(1).lower() == expected.lower()
+
+
+def test_tool_fact_beats_wording_when_decision_conflicts():
+    """真建了单就不可能是否决:create_task 的成功调用优先于正文措辞。"""
+    context: dict = {}
+    WorkflowEngine._extract(
+        context, "decision", "【决策】本轮决策:none。",
+        [{"name": "create_task", "status": "executed",
+          "result": {"task_no": "task-20261114-7777"}}],
+    )
+    assert context["last_task_no"] == "task-20261114-7777"
+    assert context["last_decision"] == "irrigate"
+
+
+def test_self_loop_creates_correction_task_from_verification_plan():
+    """验证层算出的 correction 必须被执行:建修正单 → 回去浇水,而不是原地重验。
+
+    现场(run #28):loop body 只回验证官,三轮拿到同一批传感器数据(恒为 40.41%),
+    feedback_logs 一行没有 —— 循环在画布上转了,物理世界一动不动,run 还标了 success。
+    PRD 11.4.2 要求「写 feedback_logs、生成新任务(trigger=selfloop),回到执行-验证循环」。
+    """
+    harness = Harness()
+
+    class VerifierRunner:
+        def __init__(self):
+            self.round = 0
+
+        async def run(self, task, upstream=None):
+            self.round += 1
+            verdict = "failed" if self.round <= 2 else "success"
+            return AgentTurn(
+                agent_key="verifier",
+                content=f"【验证报告】结论:{verdict}，达成率 40.41%。",
+                tool_calls=[{"name": "verify_result", "status": "executed", "result": {
+                    "verdict": verdict, "achievement": 40.41, "baseline": 38.47,
+                    "measured": 45.15, "gap": 9.85, "task_no": "task-20261114-0019",
+                    "confidence": 100.0, "round_no": self.round,
+                    "correction": {"strategy": "topup", "duration_s": 19.9, "times": 1,
+                                   "interval_s": 0, "gap": 9.85,
+                                   "reason": "缺口 9.85% 在 15.0 以内,单次补灌 19.9s"},
+                }}],
+            )
+
+    factory = harness.engine.agent_runner_factory
+    verifier = VerifierRunner()
+    harness.engine.agent_runner_factory = (
+        lambda key: verifier if key == "verifier" else factory(key)
+    )
+    import asyncio
+    result = asyncio.run(harness.engine.run(
+        prd_default_dag(), run_id=1, trigger="manual",
+        init_context={"executor_device": "mock-k10-act-03"},
+    ))
+
+    created = [params["payload"] for name, params in harness.tool_calls if name == "create_task"]
+    assert len(created) >= 2, created                 # 决策 1 张 + 修正至少 1 张
+    assert created[-1]["trigger"] == "selfloop"       # PRD 11.4.2 的修正任务标记
+    assert created[-1]["params"]["duration_s"] == 19.9   # 用验证层算出的补灌时长
+    assert created[-1]["device_id"]                    # 修正单也要有归属终端
+
+    feedbacks = result.context.get("feedbacks") or []
+    assert feedbacks, "修正动作必须留下证据链(context.feedbacks → feedback_logs)"
+    assert feedbacks[0]["strategy"] == "topup"
+    assert feedbacks[0]["from_task_no"] == "task-20261114-0019"
+    assert feedbacks[0]["to_task_no"]
+
+
+def test_executor_sends_the_duration_the_decision_created():
+    """执行管家不能自己报一个时长:run #30 实测载荷 45s、设备真浇 60s。
+
+    决策官建单时定了 45 秒,执行管家(没有建单权限)从历史里记得一个 60,
+    照自己的数字下发。任务号已经由引擎递过去了,时长必须同样处理 ——
+    否则报告写「第 1 轮 45.00s」而物理上浇了 60 秒。
+    """
+    harness = Harness()
+
+    class DecisionRunner:
+        async def run(self, task, upstream=None):
+            return AgentTurn(
+                agent_key="decision",
+                content="【决策】本轮决策:irrigate。方案:浇水45秒，目标湿度55-65%。",
+                tool_calls=[{"name": "create_task", "status": "executed",
+                             "result": {"task_no": "task-20261114-0101"},
+                             "arguments": {"type": "device_cmd", "priority": 6,
+                                           "payload": {"action": "pump",
+                                                       "params": {"duration_s": 45}}}}],
+            )
+
+    class ExecutorRunner:
+        async def run(self, task, upstream=None):
+            from app.agents.context import current_pump_duration
+
+            return AgentTurn(
+                agent_key="executor",
+                content="【执行反馈】已下发。",
+                tool_calls=[{"name": "send_device_cmd", "status": "executed",
+                             "result": {"published": True},
+                             # 模型自己记的是 60 秒(上一轮的旧数字)
+                             "arguments": {"device_id": "mock-k10-act-03", "action": "pump",
+                                           "params": {"duration_s": 60}},
+                             "seen_duration": current_pump_duration()}],
+            )
+
+    factory = harness.engine.agent_runner_factory
+    decision, executor = DecisionRunner(), ExecutorRunner()
+    harness.engine.agent_runner_factory = lambda key: (
+        decision if key == "decision" else executor if key == "executor" else factory(key)
+    )
+    import asyncio
+    result = asyncio.run(harness.engine.run(
+        prd_default_dag(), run_id=1, trigger="manual",
+        init_context={"executor_device": "mock-k10-act-03"},
+    ))
+
+    assert result.context["last_duration_s"] == 45.0

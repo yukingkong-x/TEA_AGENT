@@ -306,7 +306,25 @@ def _raise_alert(level: str, message: str, source: str = "agent:verifier") -> An
 
 
 def _schedule_correction(task_no: str, payload: dict) -> Any:
-    """Self-Loop：把修正指令排成一条新任务（trigger=selfloop），由调度器接走。"""
+    """Self-Loop 修正单只建一次:工作流在场时由引擎建(engine._apply_correction)。
+
+    run #29 实测两条路径同时开火:验证层建 task-0024(扁平 payload、没 params 包装),
+    引擎又建 task-0025 —— 前者派发后一直不 ack、超时重试,报告时间线里多出一串
+    无关事件,画布上还多点亮一张单。修正动作的**唯一出口**改成引擎:
+    它知道本轮执行终端、能把 duration 放进 params、还会写 feedback_logs。
+
+    引擎不在场(单工具调用 verify_result / 脚本手工验证)时才由验证层兜底建单。
+    """
+    try:
+        from app.core.run_context import current_run_id
+
+        run_id = current_run_id()
+    except Exception:  # noqa: BLE001 基座未合入:退回建单
+        run_id = None
+    if run_id is not None:
+        logger.info("Self-Loop 修正单交由工作流引擎创建（run {}），验证层不重复建单", run_id)
+        return None
+
     from app.db import session_scope
     from app.models.tasks import Task
     from app.core.ids import new_task_no   # 基座的编号生成器（task-YYYYMMDD-NNNN）
@@ -395,6 +413,20 @@ def _load_run(run_id: int) -> dict:
             return dict(row.payload_json or {}) if row is not None else {}
 
         rounds = []
+        # 诊断文案取自 feedback_logs(PRD 6.13 证据链):「缺口 9.87% → 单次补灌 19.9s」。
+        # 报告「诊断与修正」章节靠它,否则只能看到达成率,看不出为什么改成 19.9 秒。
+        feedback_notes: dict[str, str] = {}
+        try:
+            from app.models.feedback_logs import FeedbackLog
+
+            for row in db.scalars(
+                select(FeedbackLog).where(FeedbackLog.run_id == run_id)
+            ).all():
+                src = str(dict(row.correction_json or {}).get("from_task_no") or "")
+                if src and row.failure_reason:
+                    feedback_notes[src] = str(row.failure_reason)
+        except Exception as exc:  # noqa: BLE001 反馈表缺失/未建:报告照常出,只是少一句诊断
+            logger.debug("feedback_logs 读取失败，诊断文案留空：{}", exc)
         for index, v in enumerate(verifications):
             payload = _payload_of(v.task_no)
             rounds.append({
@@ -410,6 +442,7 @@ def _load_run(run_id: int) -> dict:
                 "target_high": _f(v.target_high, 65.0),
                 # 写死 0.0 会让每轮都显示 "0.00s",报告看不出「为什么这轮只浇 45 秒」
                 "duration_s": _duration_of(payload) if payload else 0.0,
+                "note": feedback_notes.get(v.task_no, ""),
             })
         # 时间线优先用 task_events:调度派单 / 设备回执 / 执行完成都有真实时间戳,
         # 能看出「派单到回执 3 秒、回执到跑完 45 秒」。只有任务行的话,整条流水线

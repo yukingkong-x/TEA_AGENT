@@ -149,7 +149,17 @@ def build_default_registry(bindings: Optional[dict[str, AgentSpec]] = None) -> T
                       {"type": "object",
                        "properties": {"device_id": {"type": "string"},
                                       "action": {"type": "string"},
-                                      "params": {"type": "object"}},
+                                      "params": {"type": "object"},
+                                      # 可选:本轮决策单号。给了就复用那一单(回执、轨迹、
+                                      # 超时重试全挂同一张单);不填时平台按本轮决策单自动
+                                      # 填充(agents/base._with_executor_device),基座再以
+                                      # 「认领 dispatched 且无 dispatch 轨迹的单」兜底。
+                                      # 三条路互不冲突,都是同一张单。
+                                      "task_no": {
+                                          "type": "string",
+                                          "description": "本轮要下发的任务号,如 task-20261114-0016;"
+                                                         "不填则由平台按本轮决策单自动带上",
+                                      }},
                        "required": ["device_id", "action", "params"]},
                       _not_ready("send_device_cmd", "等待 devices/command.py(队友 B)+ REQ-F-014"))
     registry.register("verify_result", "对任务触发复测与达成率验证",
