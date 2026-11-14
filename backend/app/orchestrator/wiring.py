@@ -130,9 +130,73 @@ def _device_online(device_id: str) -> bool:
 
 
 def _emit(event: dict) -> None:
+    """调度器事件 → WS 广播 + 任务轨迹落库。
+
+    调度器发的是**嵌套**形态 `{"type","data","ts"}`（与工作流引擎的扁平不同，
+    那边由 `workflow/wiring._emit` 自己收字段），这里直接取 `data`。
+    """
     from app.core.ws_manager import manager
 
-    manager.publish_threadsafe(event["type"], event.get("data"))
+    data = event.get("data")
+    manager.publish_threadsafe(event["type"], data)
+
+    if event.get("type") == "task_status" and isinstance(data, dict):
+        _record_task_event(data)
+
+
+_warned_no_event_table = False
+
+
+def _record_task_event(data: dict) -> None:
+    """往 `task_events` 追加一行轨迹。
+
+    表还没建时**静默跳过并只警告一次**：这张表是 REQ-F-015 的加分项，
+    缺它不能让调度器停摆；但每 tick 都刷一条 warning 会把日志淹了。
+    """
+    global _warned_no_event_table
+
+    try:
+        from sqlalchemy import select
+
+        from app.db import session_scope
+        from app.models.task_events import TaskEvent
+    except ModuleNotFoundError:
+        if not _warned_no_event_table:
+            _warned_no_event_table = True
+            logger.warning("task_events 表尚未建立，任务轨迹暂不可用（调度与 WS 不受影响）")
+        return
+    except Exception as exc:  # noqa: BLE001 库连不上也不能影响调度
+        logger.warning("任务轨迹不可用（初始化失败）：{}", exc)
+        return
+
+    from app.orchestrator.events import from_task_status, is_duplicate
+
+    candidate = from_task_status(data)
+    if not candidate["task_no"]:
+        return
+
+    try:
+        with session_scope() as db:
+            previous = db.scalar(
+                select(TaskEvent)
+                .where(TaskEvent.task_no == candidate["task_no"])
+                .order_by(TaskEvent.id.desc())
+                .limit(1)
+            )
+            prev_row = None
+            if previous is not None:
+                prev_row = {
+                    "task_no": previous.task_no,
+                    "event": previous.event,
+                    "from_status": previous.from_status,
+                    "to_status": previous.to_status,
+                    "reason": previous.reason,
+                }
+            if is_duplicate(prev_row, candidate):      # 挂起等设备时每 tick 一条，别刷 300 行
+                return
+            db.add(TaskEvent(**candidate))
+    except Exception as exc:  # noqa: BLE001 轨迹写失败不能影响调度
+        logger.warning("任务轨迹落库失败（{}）：{}", candidate.get("task_no"), exc)
 
 
 def build_deps() -> SchedulerDeps:
