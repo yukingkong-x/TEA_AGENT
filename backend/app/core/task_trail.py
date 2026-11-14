@@ -40,6 +40,7 @@ def record(
     actor: str = "device",
     run_id: int | None = None,
     payload: dict[str, Any] | None = None,
+    event: str | None = None,
 ) -> bool:
     """追加一行轨迹，返回是否真的写了（False = 跳过/降级）。
 
@@ -49,7 +50,7 @@ def record(
     global _warned_unavailable, _warned_failing
 
     try:
-        from ..orchestrator.events import build, is_duplicate
+        from ..orchestrator.events import EVENT_TASK_STATUS, build, is_duplicate
         from ..models.task_events import TaskEvent
     except ModuleNotFoundError:
         if not _warned_unavailable:
@@ -62,6 +63,7 @@ def record(
 
     candidate = build(
         task_no=task_no,
+        event=event or EVENT_TASK_STATUS,
         from_status=from_status,
         to_status=to_status,
         reason=reason,
