@@ -203,7 +203,13 @@ def test_agent_failure_marks_run_failed():
 
 def test_start_run_seam_raises_when_not_wired():
     # 接缝没接线时必须显式失败,由 seams 翻译成 503,不许假装成功
-    with pytest.raises(WorkflowNotReady):
+    # 合入基座后 _raise_not_ready 抛的是 app.seams.SeamNotReady(路由统一转 503),
+    # 本分支没有基座时才是 WorkflowNotReady —— 两者都算合格,只要不是静默成功。
+    try:
+        from app.seams import SeamNotReady
+    except Exception:  # noqa: BLE001
+        SeamNotReady = WorkflowNotReady
+    with pytest.raises((WorkflowNotReady, SeamNotReady)):
         start_run(1, "manual")
 
 
@@ -232,6 +238,53 @@ def test_start_run_wires_through_deps():
         assert recorded["context"]["last_decision"] == "irrigate"
     finally:
         engine_mod._deps = None  # 复原,避免污染其它用例
+
+
+def test_start_run_times_out_instead_of_hanging_forever(monkeypatch):
+    """节点里一次 await 不回来,run 不能永远 running(run 24 真实卡死)。
+
+    现场(2026-11-14 run #24):执行管家下发后,验证官节点再没回来,run 挂在
+    running 十几分钟,前端一直转圈、接口也不报错。正确行为是超时兜底:
+    标记 failed 并写明最后停留的节点,让「卡住」变成「明确失败」。
+    """
+    import asyncio
+
+    from app.workflow import engine as engine_mod
+
+    recorded: dict[str, object] = {}
+
+    async def _never(*args, **kwargs):
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(engine_mod.WorkflowEngine, "run", _never)
+    monkeypatch.setattr(engine_mod, "RUN_TIMEOUT_S", 0.05)
+
+    deps = engine_mod.EngineDeps(
+        load_workflow=lambda wf_id: prd_default_dag(),
+        create_run=lambda wf_id, trigger: 77,
+        update_run=lambda run_id, status, context, error: recorded.update(
+            {"run_id": run_id, "status": status, "error": error}
+        ),
+        agent_runner_factory=lambda key: FakeRunner(key, {}, REPLIES),
+        tool_invoke=lambda name, params: {},
+        emit=None,
+    )
+    engine_mod.configure(deps)
+
+    async def _scenario():
+        engine_mod.start_run(1, "manual")
+        for _ in range(50):        # 等后台任务把 failed 写回去
+            if recorded:
+                break
+            await asyncio.sleep(0.02)
+
+    try:
+        asyncio.run(_scenario())
+    finally:
+        engine_mod._deps = None
+
+    assert recorded["status"] == "failed"
+    assert "超时" in str(recorded["error"])
 
 
 # ── 2026-11-14 真实 run #9 的两个现场故障 ──────────────────────────────

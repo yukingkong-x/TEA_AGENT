@@ -99,6 +99,71 @@ async def _maybe_await(value: Any) -> Any:
     return value
 
 
+def _bind_executor_device(device_id: Any):
+    """把本轮执行终端放进 ContextVar,供 AgentRunner 建单时补 payload.device_id。
+
+    引擎不直接依赖 agents 包(它要能单测、也能在没有 Agent 层的环境跑),
+    所以导入失败就静默跳过 —— 补不上时行为退回旧样(任务可能派不出去)。
+    """
+    if not device_id:
+        return None
+    try:
+        from app.agents.context import set_executor_device
+
+        return set_executor_device(str(device_id))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _release_executor_device(token) -> None:
+    if token is None:
+        return
+    try:
+        from app.agents.context import reset_executor_device
+
+        reset_executor_device(token)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _bind_current_task(task_no: Any) -> None:
+    """决策落地后把任务号放进 ContextVar,执行管家下发时自动带上。
+
+    `send_device_cmd` 的 schema 里没有 task_no(PRD 7.3),模型时灵时不灵:
+    run #19 它没填 → 基座的认领逻辑不成立(那张单已有 assigned_device)→ 又建一张新单,
+    决策单超时变 dead、真执行的单与 run 脱钩。任务号是引擎已知事实,由这里给。
+    """
+    if not task_no:
+        return
+    try:
+        from app.agents.context import set_current_task_no
+
+        set_current_task_no(str(task_no))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _clear_current_task(token) -> None:
+    if token is None:
+        return
+    try:
+        from app.agents.context import reset_current_task_no
+
+        reset_current_task_no(token)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _open_task_scope():
+    """起跑时把任务号清空并拿一个 token,run 结束统一还原(不把上一条 run 的单带过来)。"""
+    try:
+        from app.agents.context import set_current_task_no
+
+        return set_current_task_no("")
+    except Exception:  # noqa: BLE001
+        return None
+
+
 class WorkflowEngine:
     """按 DAG 顺序驱动节点;parallel 扇出、loop 循环、condition 分流。"""
 
@@ -118,6 +183,8 @@ class WorkflowEngine:
         self.known_agents = known_agents
         self.known_tools = known_tools
         self.max_steps = max_steps
+        # 当前停留节点,供外层超时兜底报告「卡在哪」(run 24 卡死时无从下手)
+        self.current_node = ""
 
     # ── 事件 ──
     def _fire(self, event: dict) -> None:
@@ -180,6 +247,10 @@ class WorkflowEngine:
         })
 
         start_id = next(n["id"] for n in dag["nodes"] if n.get("type") == "start")
+        # 本轮执行终端放进上下文:决策官真的调用 create_task 时,AgentRunner 用它补
+        # payload.device_id(模型不会自己填,漏了就落一张派不出去的空单)。
+        device_token = _bind_executor_device(context.get("executor_device"))
+        task_token = _open_task_scope()
         try:
             await self._walk(start_id, nodes, by_id, context, result, stop_at=None, steps=[0])
             result.status = "success"
@@ -187,6 +258,8 @@ class WorkflowEngine:
             result.status = "failed"
             result.error = f"{type(exc).__name__}: {exc}"
         finally:
+            _clear_current_task(task_token)
+            _release_executor_device(device_token)
             result.context = context
             result.duration_ms = int((time.monotonic() - started) * 1000)
             self._fire({
@@ -246,6 +319,10 @@ class WorkflowEngine:
         node_id, node_type = node["id"], node.get("type")
         record.status = "running"
         begun = time.monotonic()
+        # 卡住时得知道停在哪:run 24 停在执行管家之后、验证官之前,日志里一个字都没有,
+        # 只能靠猜节点顺序。节点进出各留一行,以后一眼看出是哪个节点没回来。
+        self.current_node = f"{node_id}({node_type})"
+        logger.info("▶ 节点 {} {} 开始（run {}）", node_id, record.name, result.run_id)
         self._fire({
             "type": "node_started", "run_id": result.run_id, "node_id": node_id,
             "node_type": node_type, "name": record.name, "agent_key": node.get("agent_key"),
@@ -271,6 +348,8 @@ class WorkflowEngine:
                 self._extract(context, agent_key, record.output, record.tool_calls)
                 if agent_key == "decision":
                     await self._ensure_task(node_id, record, context)
+                # 任务号已知(Agent 建的或引擎补的)就告诉下游,执行管家下发时自动带上
+                _bind_current_task(context.get("last_task_no"))
                 record.status = "done"
                 return self._first(node.get("next"))
 
@@ -344,6 +423,8 @@ class WorkflowEngine:
             raise
         finally:
             record.duration_ms = int((time.monotonic() - begun) * 1000)
+            logger.info("■ 节点 {} {} {}（{}ms）", node_id, record.name,
+                        record.status, record.duration_ms)
             self._fire({
                 "type": "node_finished", "run_id": result.run_id, "node_id": record.node_id,
                 "node_type": node_type, "name": record.name, "agent_key": record.agent_key,
@@ -475,6 +556,10 @@ class EngineDeps:
 
 _deps: Optional[EngineDeps] = None
 
+# 单次 run 的硬上限:正常一轮 90-180s(含 90s 渗透等待 + 7 个 Agent),给到 8 分钟。
+# 超过就认定卡死,宁可报 failed 也不能让 run 永远 running。
+RUN_TIMEOUT_S = 480.0
+
 
 def configure(deps: EngineDeps) -> None:
     """启动时由基座调用一次(bootstrap 里接真库)。"""
@@ -519,9 +604,19 @@ def start_run(wf_id: int, trigger: str = "manual") -> int:
 
     async def _drive() -> None:
         try:
-            result = await engine.run(dag, run_id=run_id, trigger=trigger,
-                                      init_context=init_context)
+            # 兜底超时:节点里任何一次 await 不回来(限流退避、工具卡死、MQTT 失联),
+            # run 就会永远挂在 running,前端只能一直转圈,演示当场死掉。
+            # 超时后标记 failed 并写明最后节点,至少是「明确失败」而不是「假装进行中」。
+            result = await asyncio.wait_for(
+                engine.run(dag, run_id=run_id, trigger=trigger, init_context=init_context),
+                timeout=RUN_TIMEOUT_S,
+            )
             _deps.update_run(run_id, result.status, result.context, result.error)
+        except asyncio.TimeoutError:
+            logger.error("run {} 超过 {}s 未结束,最后停留节点 {}", run_id, RUN_TIMEOUT_S,
+                         engine.current_node or "未知")
+            _deps.update_run(run_id, "failed", {},
+                             f"运行超时(>{RUN_TIMEOUT_S:.0f}s),最后节点 {engine.current_node or '未知'}")
         except Exception as exc:  # noqa: BLE001 后台任务异常必须落到 run 记录
             _deps.update_run(run_id, "failed", {}, f"{type(exc).__name__}: {exc}")
 
