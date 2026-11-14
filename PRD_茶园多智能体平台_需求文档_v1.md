@@ -774,7 +774,7 @@ WebSocket 推送消息统一格式：`{"type": "telemetry", "data": {...}, "ts":
       "name": "渗透等待", "next": ["n11"] },
     { "id": "n11", "type": "agent", "agent_key": "verifier", "name": "验证审计",
       "input": "对刚完成的浇水任务执行复测验证，不达标启动Self-Loop修正。",
-      "next": ["n13"] },
+      "next": ["n11b"] },
     { "id": "n11b", "type": "loop", "name": "Self-Loop",
       "max_iterations": 2,
       "exit_expression": "context.last_verification == 'success' or context.round > 2",
@@ -783,11 +783,13 @@ WebSocket 推送消息统一格式：`{"type": "telemetry", "data": {...}, "ts":
       "input": "本轮决策为暂不作业，生成简要记录。", "next": ["n13"] },
     { "id": "n13", "type": "end", "name": "结束" }
   ],
-  "edges": [ "显式 next 引用已足够，edges 留作画布布局坐标", ]
+  "edges": []
 }
 ```
 
 > 上例为**默认工作流全文**，首次启动写入 workflows 表。Self-Loop 以 `loop` 节点实现：验证未达标 → feedback 引擎生成修正任务 → executor 再执行 → verifier 再验证，最多 2 轮（`max_iterations` 可配）。画布坐标存于节点 `position: {x, y}` 字段（此处省略，画布保存时自动写入）。
+>
+> 连线约定：**边只由节点上的 `next` / `branches` / `body_next` 显式声明，`edges` 恒为空数组**，不得用于表达拓扑（画布存布局即可，不要往这里写说明文字，否则 JSON 不合法）。`n11 → n11b → n13` 是 Self-Loop 的入口与出口：验证完进 loop 判定，达标走 `n13`，不达标由 loop 按 `body_next` 回到 `n11` 重验，因此 `n11b` 必须被 `n11` 指向，否则可达性校验会判它为孤儿节点。
 
 ## 9.2 节点类型语义（nodes.py 实现依据）
 
