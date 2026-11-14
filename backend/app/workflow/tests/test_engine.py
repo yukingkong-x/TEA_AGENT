@@ -118,22 +118,54 @@ def test_run_emits_canvas_events_in_order():
     harness.run()
     types = [event["type"] for event in harness.events]
 
-    assert types[0] == "run_started"
-    assert types[-1] == "run_finished"
-    assert types.count("run_started") == 1
-    assert types.count("run_finished") == 1
-    assert "node_started" in types and "node_finished" in types
+    # 外发的是基座 WS 白名单里的两类,不是内部的四个语义名
+    assert set(types) <= {"run_status", "node_state"}
+    assert types[0] == "run_status" and harness.events[0]["status"] == "running"
+    assert types[-1] == "run_status" and harness.events[-1]["status"] == "success"
 
-    # 每个 node_started 都有配对的 node_finished,画布不会卡在「进行中」
-    started = [e["node_id"] for e in harness.events if e["type"] == "node_started"]
-    finished = [e["node_id"] for e in harness.events if e["type"] == "node_finished"]
+    nodes = [e for e in harness.events if e["type"] == "node_state"]
+    assert all(e["state"] in {"started", "finished"} for e in nodes)
+
+    # 每个 started 都有配对的 finished,画布不会卡在「进行中」
+    started = [e["node_id"] for e in nodes if e["state"] == "started"]
+    finished = [e["node_id"] for e in nodes if e["state"] == "finished"]
     assert sorted(started) == sorted(finished)
 
     # 事件里的字段够前端画动画:节点 id、类型、名字、agent_key、耗时
-    first_node = next(e for e in harness.events if e["type"] == "node_started")
+    first_node = next(e for e in nodes if e["state"] == "started")
     assert {"run_id", "node_id", "node_type", "name", "ts"} <= set(first_node)
-    finished_event = next(e for e in harness.events if e["type"] == "node_finished")
+    finished_event = next(e for e in nodes if e["state"] == "finished")
     assert {"status", "duration_ms"} <= set(finished_event)
+
+    # run 结束事件带结算字段
+    assert {"rounds", "duration_ms"} <= set(harness.events[-1])
+
+
+def test_event_names_match_base_ws_whitelist():
+    """引擎外发的事件类型必须落在基座 WS_TYPES 里,否则每条事件刷一条未知类型告警。
+
+    这是把「引擎写 node_started、基座白名单写 node_state」这类静默不一致钉住的守卫:
+    真跑起来只会打 warning、事件照发,不报错,靠人眼永远发现不了。
+    """
+    from app.workflow.engine import WS_TYPE_OF
+
+    base_whitelist = {"telemetry", "device_status", "task_status", "agent_message",
+                      "node_state", "run_status", "alert", "mode_changed"}
+    assert set(WS_TYPE_OF.values()) <= base_whitelist
+    # 四个内部事件一个都不能漏翻译
+    assert set(WS_TYPE_OF) == {"run_started", "run_finished", "node_started", "node_finished"}
+
+
+def test_agent_node_carries_tool_calls_and_tokens():
+    """对话剧场的折叠块靠这两个字段,引擎必须原样搬运 turn 的明细。"""
+    harness = Harness()
+    harness.run()
+    done = [e for e in harness.events
+            if e["type"] == "node_state" and e["state"] == "finished" and e.get("agent_key")]
+    assert done, "默认工作流至少要有一次 agent 节点的 finished 事件"
+    for event in done:
+        assert "tool_calls" in event and isinstance(event["tool_calls"], list)
+        assert "tokens_in" in event and "tokens_out" in event
 
 
 def test_invalid_dag_rejected_before_running():
