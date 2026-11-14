@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from app.workflow.dag import validate_dag
+from app.workflow.default_dag import default_dag
 
 AGENT_KEYS = {"scout", "weather", "soil", "pest", "decision", "executor", "verifier"}
 TOOL_NAMES = {"get_weather", "get_soil_status", "get_env_status", "query_knowledge",
@@ -24,44 +25,8 @@ PRD = REPO_ROOT / "PRD_茶园多智能体平台_需求文档_v1.md"
 
 
 def prd_default_dag() -> dict:
-    """PRD 9.1 的默认工作流(与文档逐字同步;改了文档就要改这里,由下面的测试把关)。"""
-    return {
-        "wf_key": "patrol_irrigation",
-        "name": "巡园浇水工作流",
-        "nodes": [
-            {"id": "n1", "type": "start", "name": "开始", "next": ["n2"]},
-            {"id": "n2", "type": "agent", "agent_key": "scout", "name": "巡园播报",
-             "input": "开始本轮巡园,目标区域:A区茶垄。", "next": ["n3"]},
-            {"id": "n3", "type": "parallel", "name": "三方会诊",
-             "branches": ["n4", "n5", "n6"], "next": ["n7"]},
-            {"id": "n4", "type": "agent", "agent_key": "weather", "name": "气象评估",
-             "input": "评估未来12小时天气对A区灌溉的影响。", "next": []},
-            {"id": "n5", "type": "agent", "agent_key": "soil", "name": "墒情分析",
-             "input": "分析A区土壤墒情并评级。", "next": []},
-            {"id": "n6", "type": "agent", "agent_key": "pest", "name": "植保核查",
-             "input": "核查当前墒情下灌溉的农艺风险。", "next": []},
-            {"id": "n7", "type": "agent", "agent_key": "decision", "name": "灌溉决策",
-             "input": "汇总上述三方结论与本轮巡园播报,按决策树给出决策;若 irrigate 则创建浇水任务。",
-             "next": ["n8"]},
-            {"id": "n8", "type": "condition", "name": "决策分流",
-             "expression": "context.last_decision == 'irrigate'",
-             "branches": {"true": ["n9"], "false": ["n12"]}},
-            {"id": "n9", "type": "agent", "agent_key": "executor", "name": "执行浇水",
-             "input": "领取设备指令任务并执行,跟踪回执直到完成或熔断。", "next": ["n10"]},
-            {"id": "n10", "type": "tool", "tool": "wait_penetration", "params": {"seconds": 90},
-             "name": "渗透等待", "next": ["n11"]},
-            {"id": "n11", "type": "agent", "agent_key": "verifier", "name": "验证审计",
-             "input": "对刚完成的浇水任务执行复测验证,不达标启动Self-Loop修正。",
-             "next": ["n11b"]},
-            {"id": "n11b", "type": "loop", "name": "Self-Loop", "max_iterations": 2,
-             "exit_expression": "context.last_verification == 'success' or context.round > 2",
-             "body_next": "n11", "next": ["n13"]},
-            {"id": "n12", "type": "agent", "agent_key": "verifier", "name": "无需作业归档",
-             "input": "本轮决策为暂不作业,生成简要记录。", "next": ["n13"]},
-            {"id": "n13", "type": "end", "name": "结束"},
-        ],
-        "edges": [],
-    }
+    """PRD 9.1 的默认工作流。定义已收进生产代码（首启写库用），这里只做别名。"""
+    return default_dag()
 
 
 def check(dag: dict) -> list[str]:

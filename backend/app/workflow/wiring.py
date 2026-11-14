@@ -215,7 +215,15 @@ def install() -> bool:
     try:
         configure(build_deps())
         logger.info("工作流引擎已接线（load_workflow / create_run / update_run / agent / tool / emit）")
-        return True
     except Exception as exc:  # noqa: BLE001
         logger.exception("工作流引擎接线失败，start_run 将返回 503：{}", exc)
         return False
+
+    # 空库首启：PRD 9.1 要求默认工作流写入 workflows 表，基座 seed 没有建，这里补
+    try:
+        from app.workflow.default_dag import ensure_default_workflow
+
+        ensure_default_workflow()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("默认工作流写入失败（画布仍可手工保存一份）：{}", exc)
+    return True
