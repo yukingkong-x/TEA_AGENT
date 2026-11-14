@@ -175,7 +175,8 @@ WS 消息统一：`{"type": "...", "data": {...}, "ts": 1730700000}`，type ∈
 | 2026-11-14 深夜 | 指令→回执→轨迹端到端 | `pump 6s` → 轨迹 3 行：`null→dispatched(dispatch,human)` → `dispatched→running(ack,device)` → `running→success(ack,device)`，`at` 均为 `2026-11-14T11:17:0x` |
 | 2026-11-14 深夜 | `GET /api/tasks/{task_no}/events` | `{items:[...], total:3}`，`id` 升序、`from/to` 可直画；任务号打错 → 404 |
 | 2026-11-14 深夜 | 密钥三态（实测三连） | 写入 → `sk-t****7890`；PUT 空串 → 值不变、日志「跳过敏感配置」；PUT `null` → 清空 + WARNING「敏感配置已被清空」 |
-| 2026-11-14 深夜 | 全量测试（容器 Python 3.11.18 / 宿主 3.13） | **84 passed**，两条环境同结果；新增 `tests/test_task_events.py` 11 例 |
+| 2026-11-14 深夜 | 全量测试（容器 Python 3.11.18 / 宿主 3.13） | **85 passed**，两条环境同结果；新增 `tests/test_task_events.py` 12 例 |
+| 2026-11-14 深夜 | 轨迹覆盖口径（实测） | 设备回执链 3 行（见上）；**工作流执行本身不建 `tasks` 行，所以跑一次 workflow 轨迹仍是 0**，抽屉要在任务行上演示 |
 
 
 ## 六、六接缝接线后的基座侧改动（2026-11-14 晚）
@@ -265,6 +266,11 @@ health 里 `not_ready`，还能从日志里看到原因。三个 install/start �
 
 顺带把 `task_status` 的 WS 载荷补上 `from` / `to` / `reason`：契约第 9 节要求
 「任务页轨迹直接画 from/to，不要前端自己推」，之前只发了 `status`。
+
+**第三条链路也补了**：`POST /api/verify/{task_no}` 落终态时记一行 `event=verify`
+（`actor=verifier`、`reason=verdict`、payload 带 `confidence/achievement/note`）。
+用 `verify` 而不是 `task_status`，抽屉才能区分「调度器派发的」和「验证官判出来的」。
+至此三条改状态的链路（调度器 / 设备回执 / 验证）都有轨迹。
 
 ### 7.3 全站时间改成带 `T` 的 ISO
 
