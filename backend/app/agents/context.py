@@ -62,3 +62,45 @@ def set_context_note(note: str):
     return CURRENT_CONTEXT_NOTE.set(note or "")
 
 
+# ── 本轮执行终端 ──────────────────────────────────────────────────────
+# 决策官真的（经 tool_choice 钉住）调用 create_task 时，它只会填动作与时长，
+# payload 里没有 device_id。基座落库后 assigned_device 为空，调度器派不出去，
+# 任务只能躺在队列里超时变 dead —— 比「没建单」更难看：画面上有一张单，却永远不动。
+# 所以由接线层在 run 起跑时给出本批次的执行终端，AgentRunner 在建单前补进 payload，
+# 不依赖模型是否记得填。
+CURRENT_EXECUTOR_DEVICE = ContextVar("current_executor_device", default="")
+
+
+def current_executor_device() -> str:
+    return CURRENT_EXECUTOR_DEVICE.get() or ""
+
+
+def set_executor_device(device_id: str):
+    return CURRENT_EXECUTOR_DEVICE.set(device_id or "")
+
+
+def reset_executor_device(token) -> None:
+    CURRENT_EXECUTOR_DEVICE.reset(token)
+
+
+# ── 本轮任务号 ────────────────────────────────────────────────────────
+# 执行管家调 send_device_cmd 时,schema 里没有 task_no(PRD 7.3 只给了 device/action/params),
+# 模型又时灵时不灵:run #17/#18 它照着上游提示填了,run #19 就没填 —— 于是 B 的
+# `_pending_device_cmd` 认领失败(那张单已经有 assigned_device 了),send_cmd 另建一张新单:
+# 决策单 0011 超时变 dead,真执行的 0012 与 run 脱钩,验证官还去验了那张没下发的 0011。
+# 任务号是引擎已知的确定性事实,不该指望模型复述。
+CURRENT_TASK_NO = ContextVar("current_task_no", default="")
+
+
+def current_task_no() -> str:
+    return CURRENT_TASK_NO.get() or ""
+
+
+def set_current_task_no(task_no: str):
+    return CURRENT_TASK_NO.set(task_no or "")
+
+
+def reset_current_task_no(token) -> None:
+    CURRENT_TASK_NO.reset(token)
+
+
