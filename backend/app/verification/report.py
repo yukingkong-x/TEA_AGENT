@@ -161,3 +161,13 @@ def render_report(data: ReportData) -> str:
         add("")
 
     return "\n".join(lines).rstrip() + "\n"
+
+
+def generate_report(run_id: int) -> int:
+    """接缝别名：基座 `seams._CANDIDATES` 第一个候选就是本模块的 generate_report。
+
+    实现在 engine.py（要读库、要注入 deps），这里延迟导入避免 report ↔ engine 循环。
+    """
+    from app.verification.engine import generate_report as _generate
+
+    return _generate(run_id)

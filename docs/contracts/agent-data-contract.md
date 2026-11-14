@@ -34,13 +34,40 @@
 | executor | 【执行反馈】 |
 | verifier | 【验证报告】 |
 
-## 3. 任务状态(PRD 10.2,9 态)
+## 3. 任务状态(PRD 10.2 + 11.3)
 
-任务在以下 9 种状态间流转,前端状态徽章与文案以此为准:
+以 **PRD 10.2 与基座 `models/tasks.py` 的枚举**为准，共 9 态 + `needs_human`：
 
-`pending → queued → running → waiting_tool → tool_done → completed / failed / canceled / degraded`
+```
+pending → dispatched → running → success
+   ↑           ↓           ↓
+   │           ▼           ▼
+   └──── retrying ←── timeout / failed ──→ dead（重试耗尽）
+                              │
+                              └──→ needs_human（置信度 <60%，由验证器标记）
+canceled：人工取消任何非终态任务
+```
 
-- `degraded` 是本平台特色:LLM 降级期间产生的任务结果,用第 5 节的降级标记区别于正常结果。
+| 状态 | 徽章 | 说明 |
+| ---- | ---- | ---- |
+| `pending` | 排队（灰） | 已入库、等调度器打分派发 |
+| `dispatched` | 已派发（蓝） | 已选中 Agent/设备，等 ack |
+| `running` | 执行中（蓝闪） | 设备回执 running |
+| `success` | 成功（绿） | 终态 |
+| `failed` | 失败（红） | 进重试或终态 |
+| `timeout` | 超时（红） | 超 `timeout_s` 未回执 |
+| `retrying` | 重试（橙） | 退避中（2/4/8s）；设备离线时挂着不算失败 |
+| `dead` | 熔断/耗尽（深红） | 重试用尽，或被熔断拒绝（`result.rejected=breaker_open`） |
+| `needs_human` | 转人工（紫） | 置信度 <60%，等人工判 |
+| `canceled` | 已取消（灰） | 人工取消 |
+
+三条必须遵守：
+
+- **没有 `queued`、`completed`、`waiting_tool`、`tool_done`** —— 这是早期草案的叫法，
+  基座与 PRD 都不用；`queued` 就是 `pending`，`completed` 就是 `success`；
+- **`degraded` 不是任务状态**，它是 Agent 节点/消息上的标记（见第 5 节），别混进状态机；
+- `needs_human` 在 MySQL 枚举补齐前**可能以 `failed` + `result_json.verdict="needs_human"` 出现**，
+  徽章判 `result_json.verdict` 兜住（见第 9 节）。
 
 ## 4. run 上下文(PRD 9.3)
 
