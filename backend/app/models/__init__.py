@@ -15,6 +15,7 @@ from .settings import Setting
 from .task_events import TaskEvent
 from .tasks import Task
 from .verifications import Verification
+from .workflow_node_records import WorkflowNodeRecord
 from .workflow_runs import WorkflowRun
 from .workflows import Workflow
 
@@ -27,6 +28,7 @@ __all__ = [
     "Agent",
     "Workflow",
     "WorkflowRun",
+    "WorkflowNodeRecord",
     "Task",
     "TaskEvent",
     "AgentMessage",

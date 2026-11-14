@@ -2,7 +2,10 @@
 
 - 3 台真实设备（PRD 4.1）：k10-field-01 / esp32-soil-02 / k10-act-03
 - settings 默认键值（PRD 6.14）
-- **不写** agents / workflows 表：那两块的种子是队长的（提示词见 app/agents/prompts.py）
+- **agents 表**：按队长正本 `app/agents/prompts.py` 的 `to_db_rows()` 补齐（只补缺失，
+  不覆盖设置页改过的行）。原来这块空着，`GET /api/agents` 直接返回 `[]`，设置页只能
+  拿本地样例兜底。
+- **不写** workflows 表：默认 DAG 由队长的 `ensure_default_workflow()` 负责。
 
 全部幂等：只补缺失项，不覆盖用户/队长改过的值。
 """
@@ -14,6 +17,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .core import agent_seed
 from .models.devices import Device
 from .models.settings import Setting
 
@@ -104,6 +108,10 @@ def seed_settings(db: Session) -> int:
 
 
 def seed_defaults(db: Session) -> dict[str, int]:
-    stats = {"devices": seed_devices(db), "settings": seed_settings(db)}
+    stats = {
+        "devices": seed_devices(db),
+        "settings": seed_settings(db),
+        "agents": agent_seed.sync_agents(db),
+    }
     db.commit()
     return stats
