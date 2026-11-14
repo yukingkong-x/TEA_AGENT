@@ -106,13 +106,17 @@ WS 消息统一：`{"type": "...", "data": {...}, "ts": 1730700000}`，type ∈
 
 分页统一：`{ items, total, page, page_size, pages }`。
 
-> **`GET /api/devices` 的分组约定（给 A，2026-11-14 起）**
-> 缺省按**当前运行模式**只返回该模式那一组：Mock 模式返 3 台 `mock-*`，Real 模式返 3 台真机。
-> 这样大屏不用改代码就不会出现"3 台真设备永远灰着"。
-> 需要全量或显式分组时用查询参数（这三个值之外的输入返回 400）：
+> **`GET /api/devices` 的分组约定（给 A，2026-11-14 修订）**
+> **缺省返回全量 6 台（3 真机 + 3 台 `mock-*`），与 PRD 原文一致，没有变过**——
+> 11-14 当天曾短暂改成「按当前模式过滤」，已回退，你按 `is_mock` 字段自己分组即可。
+> 原因：演示现场常见 Mock 与真机同时在跑（真板子在烧、模拟器也开着），后端按模式筛两头都丢信息；
+> 且契约默认值变更必须走 issue（PRD 3.1），不能悄悄变。
+> 需要后端替筛时用查询参数（这三个值之外的输入返回 400）：
 > - `?is_mock=true` / `?is_mock=1` → 只要 Mock
 > - `?is_mock=false` / `?is_mock=0` → 只要真机
-> - `?is_mock=all` → 全量 6 台（设备管理页用）
+> - `?is_mock=all` → 全量，等同缺省
+>
+> 每台设备都带 `is_mock`、`online`、`state`（online/suspect/offline）三个字段，前端分组不必猜测。
 
 ---
 
@@ -136,7 +140,8 @@ WS 消息统一：`{"type": "...", "data": {...}, "ts": 1730700000}`，type ∈
 | 14 | 9.1 默认工作流里 `n11b`（Self-Loop 的 loop 节点）没有任何入边 | `validate_dag` 把 loop 视为「环绕 `body_next` 的结构标记」：body 可达即 loop 可达，且 loop 的 `next` 继续参与扩散；非 loop 节点仍必须从 start 可达 | 照普通顶点判可达性会把 PRD 原文 DAG 判成非法（`n11b` 不可达）→ 画布一保存默认工作流就 400 → PRD 9.4 第一条验收不成立。回归用例：`tests/test_base_logic.py::test_dag_prd_default_workflow_passes` |
 | 15 | 5.3 指令下发 | `send_cmd` 内部先 `db.commit()` 再 `publish()`，提交责任收进函数；调用方再 commit 一次无害 | 设备 ack 是毫秒级回来的，在 paho 线程用另一个 session 查 Task。只 flush 不提交时对方看不见 → `task=None` → 只广播不落库 → 任务永远卡 dispatched，超时后补一条假的「指令超时」报警。回归用例：`tests/test_command_flow.py` |
 | 16 | 6.14 设置页写 `llm_api_key` | `set_many` 加硬闸：空值不改、值含 `*` 或以 `enc:` 开头一律跳过并 warning | `GET /api/settings` 返回 `sk-a****wxyz`，前端把整张表单原样 PUT 回来是最常见写法；掩码当明文再加密落库 → LLM 全线 401 且极难排查。不能只靠「空串=不改」 |
-| 17 | 7.4 `GET /api/devices` 返回全部设备 | 缺省只返回当前模式那一组，`?is_mock=true/false/all` 可显式指定 | 3 台真机 + 3 台 mock 同屏时，大屏会有 3 台永远灰着（Mock 演示）或 3 台假设备（Real 演示） |
+| 17 | 7.4 `GET /api/devices` 返回全部设备 | **缺省返回全量**（沿用 PRD 原文）；只有显式 `?is_mock=true/false` 才过滤，`all` 等同缺省 | 曾一度把缺省改成「按当前 mode 过滤」，队长 review 判定为契约默认值悄悄变更（违反 PRD 3.1）：演示现场 Mock 与真机常同时在跑（真板子在烧、模拟器也开着），两个方向都在丢信息，且前端大屏按「6 台」写死。**已回退**，要再改必须走 issue。回归用例：`tests/test_device_list.py` |
+| 20 | 6.11 `alerts.source` 区分发起方 | 缺省值读 `ContextVar CURRENT_AGENT_KEY`（队长 `base.py` 在 `_execute_tool` 里 set/reset），格式 `agent:{key}`；显式传参优先，裸 key 自动补 `agent:` 前缀 | LLM 的工具 schema 只有 `level`/`message`，传不进 source；靠 runner 的调用上下文隐式带入，既不改 schema 也能落对身份。verification 这类确定性判定直连调用时显式传 `agent:verifier`（更可靠，不依赖上下文）。已知边界：丢线程池执行不会继承 ContextVar，需 `copy_context().run(...)` |
 | 18 | 5.2 遥测 `ts` 直接用上报值 | `abs(ts-now) > 300s` 时改用服务器时间并记 warning | 固件无 RTC / 掉电回到 1970 是常见故障：脏 ts 会污染曲线、让 `sweep_offline` 立刻判离线、趋势计算全废 |
 | 19 | 5.5 新设备登记 | `ensure_device` 建新设备时 `online=False, last_seen=None`（不预置在线） | device_id 打错一个字，下发一次指令就凭空造出一台「在线」设备，120s 后再补一条假离线报警；让它等自己的心跳转在线 |
 | 20 | 12.2 Mock/Real 切换 | 切 Real 时 `deactivate_mock_devices()` 把 `is_mock` 设备置离线、清 `last_seen` 与报警标记 | 只停模拟器线程不够：`mock-*` 还留在表里，120s 后 `sweep_offline` 连发 3 条假离线报警，演示切真机时大屏突然冒 3 条红点 |
@@ -152,3 +157,12 @@ WS 消息统一：`{"type": "...", "data": {...}, "ts": 1730700000}`，type ∈
 - 报告 PDF 导出（F-022 另一半）在前端，后端只出 Markdown
 - Real 模式端到端（REQ-H-003）要等队友 C 三板同网段，基座侧已就绪
 - `docs/contracts/` 里没有 MQTT 契约变更：报文严格照 PRD 第 5 章实现
+
+## 五、环境验证记录
+
+| 日期 | 项 | 结果 |
+| --- | --- | --- |
+| 2026-11-14 | 容器内全量测试 `docker compose run --rm --no-deps backend pytest -q` | **55 passed in 3.67s**，容器 Python **3.11.18**（镜像 python:3.11-slim） |
+| 2026-11-14 | 宿主 venv 交叉验证（Python 3.13） | 55 passed —— 与容器的 3.11 无差异，说明代码未踩版本特性 |
+| 2026-11-14 | 依赖跨版本可解析性 `pip install --dry-run --python-version 3.11 --only-binary=:all:` | 50 个包全部有 wheel，无源码编译依赖 |
+
