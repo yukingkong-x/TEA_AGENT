@@ -234,6 +234,12 @@ canceled：人工取消任何非终态任务
 
 - `verdict` 三值：`success` / `failed` / `needs_human`。**`needs_human` 的判定优先于达成率**
   （浇水后读数大跌时先怀疑数据，而不是继续补水）；
+- `baseline` 可能为 `null`：真实 `device_cmd` 任务的载荷不带基线，验证时按
+  「任务创建时刻前最后一条读数」→「复测 3 条之前那一条」→ 都没有才留空。留空时
+  `baseline_missing: true`、`achievement: 0.0` 且**不参与判定**，一律 `needs_human`。
+  前端把 `null` 显示成「—」，不要画成 0（前端别自己 `?? 0`）。
+- `sensor_id` 是复测读数的来源设备（role=soil），与 `device_id`（执行终端）可能不同；
+  抽屉里要展示「谁执行、谁复测」时用它，不要拿 `device_id` 去查土壤曲线；
 - `reasons` 是给人看的解释，报告页与任务详情直接列，不要改写成别的措辞；
 - `correction` 为 `null` 表示本轮无需修正（已成功 / 已转人工 / 轮次用尽）。
 

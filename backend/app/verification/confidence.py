@@ -27,6 +27,9 @@ class Evidence:
     previous_value: float | None = None  # 复测前一个点,用于跳变判定
     history_mean: float | None = None    # 该设备近 24h 均值
     history_sigma: float | None = None   # 近 24h 标准差
+    # 没有执行前基线(payload 与历史前值都取不到)。此时 baseline 字段是个占位 0,
+    # 必须靠这个标志把「算不出来」和「基线真的是 0」区分开。
+    baseline_missing: bool = False
 
     @property
     def measured(self) -> float:
@@ -55,6 +58,12 @@ def _data_quality(ev: Evidence, reasons: list[str]) -> float:
     else:
         reasons.append("复测设备离线(数据质量 -0.4)")
 
+    if ev.baseline_missing:
+        # 没有执行前基线,这组读数撑不起任何达成率结论:数据质量按 0 计,
+        # 置信度自然跌到 60% 以下走转人工 —— 而不是拿 0.0 当基线算出一个 89%。
+        reasons.append("缺执行前基线,读数无法与作业前对比(数据质量 -0.5)")
+        return 0.0
+
     if len(ev.samples) >= 3:
         median = statistics.median(ev.samples)
         if median > 0:
@@ -81,6 +90,9 @@ def _data_quality(ev: Evidence, reasons: list[str]) -> float:
 
 
 def _rule_cross(ev: Evidence, reasons: list[str]) -> float:
+    if ev.baseline_missing:
+        reasons.append("无基线可比对,物理合理性与提升速率均无从判定(规则交叉 0)")
+        return 0.0
     physical = 1.0 if ev.measured > ev.baseline else 0.0
     if physical == 0.0:
         reasons.append("浇水后读数未上升(规则交叉:物理合理性 0)")
