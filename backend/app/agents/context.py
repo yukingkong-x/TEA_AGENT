@@ -8,6 +8,11 @@ LLM 工具调用的,schema 里没有 source 时 LLM 传不进来,只能永远落
 - core/tool_impl.raise_alert 的缺省 source 从这里取(队友 B 接入,见 docs/contracts);
 - 只依赖标准库,避免 core ↔ agents 循环导入(agents/tools.py 会 import core.tool_impl)。
 
+⚠️ 唯一权威的 ContextVar 在 **基座** `core/tool_impl.py`(队友 B 定义):工具实现读的是它,
+set 必须 set 同一个对象,否则两边各持一个 ContextVar,读到空值、source 静默退化成 "agent"。
+队长分支只有 agents/、没有 core/tool_impl.py,所以这里做了一层「有则复用、无则自建」的兼容;
+`test_context.py::test_contextvar_is_shared_with_backend` 守住「合并后必须是同一个对象」。
+
 约定:source 的落库形态统一 ``agent:<key>``;取不到 key 时退回 ``"agent"``(兼容旧数据)。
 """
 from __future__ import annotations
@@ -16,7 +21,13 @@ from contextvars import ContextVar
 
 DEFAULT_SOURCE = "agent"
 
-CURRENT_AGENT_KEY: ContextVar[str] = ContextVar("current_agent_key", default="")
+try:  # 基座存在时以它为权威(合并后走这条分支)
+    from app.core.tool_impl import CURRENT_AGENT_KEY  # type: ignore[attr-defined]
+except ModuleNotFoundError as exc:
+    # 只吞「基座还没合进来」这一种情况;其它导入错误必须原样抛出,别把真问题藏起来
+    if exc.name not in {"app.core.tool_impl", "app.core"}:
+        raise
+    CURRENT_AGENT_KEY = ContextVar("current_agent_key", default="")
 
 
 def current_agent_key() -> str:
@@ -32,3 +43,4 @@ def current_agent_source() -> str:
     if key == "system" or key.startswith("agent:"):
         return key
     return f"agent:{key}"
+
