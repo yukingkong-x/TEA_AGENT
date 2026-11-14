@@ -11,6 +11,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+from app.agents.context import CURRENT_AGENT_KEY
 from app.agents.fallback import DEGRADED_PREFIX, FALLBACKS, generic_fallback
 from app.agents.prompts import AgentSpec
 from app.agents.tools import ToolRegistry
@@ -115,6 +116,8 @@ class AgentRunner:
                  "status": "denied", "reason": "permission"},
                 json.dumps({"error": "工具调用被拒绝:权限不足"}, ensure_ascii=False),
             )
+        # 工具执行期携带当前 agent 身份:raise_alert 的 source 缺省值靠它(PRD 6.11)
+        token = CURRENT_AGENT_KEY.set(self.agent_key)
         try:
             value = await self.registry.invoke(tc.name, tc.arguments or {})
             return (
@@ -128,6 +131,8 @@ class AgentRunner:
                  "status": "error", "error": str(exc)},
                 json.dumps({"error": str(exc)}, ensure_ascii=False),
             )
+        finally:
+            CURRENT_AGENT_KEY.reset(token)
 
     async def _degraded_turn(self, turn: AgentTurn) -> AgentTurn:
         turn.degraded = True
