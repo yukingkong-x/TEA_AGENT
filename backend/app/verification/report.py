@@ -17,7 +17,11 @@ VERDICT_LABEL = {
     "needs_human": "🚨 转人工",
     "running": "⏳ 执行中",
     "pending": "⏸ 未开始",
+    # run 跑完但验证官没出结论:流程走完 ≠ 达标,不能显示成「闭环成功」
+    "unverified": "⚠️ 未产生验证结果",
 }
+
+CN_NUM = "一二三四五六七八九十"
 
 STRATEGY_LABEL = {
     "topup": "单次补灌",
@@ -74,6 +78,14 @@ def _fmt(value: float, unit: str = "%") -> str:
 def render_report(data: ReportData) -> str:
     lines: list[str] = []
     add = lines.append
+    # 章节号跟着「实际写出来的章节」递增:没验证结果时「逐轮对照」整节不出现,
+    # 若还用固定序号就会变成 一、三、四 跳号,看着像报告缺页。
+    counter = [0]
+
+    def heading(title: str) -> None:
+        counter[0] += 1
+        number = CN_NUM[counter[0] - 1] if counter[0] <= len(CN_NUM) else str(counter[0])
+        add(f"## {number}、{title}")
 
     add(f"# {data.wf_name} · 执行报告")
     add("")
@@ -86,7 +98,7 @@ def render_report(data: ReportData) -> str:
     add("")
 
     # ── 一、结论 ──
-    add("## 一、结论")
+    heading("结论")
     final = data.final_round
     if final:
         add("")
@@ -95,12 +107,14 @@ def render_report(data: ReportData) -> str:
             f"判定 `{final.verdict}`" + (f"：{final.note}" if final.note else "。"))
     else:
         add("")
-        add("本轮尚未产生验证结果。")
+        # run 走完不等于达标:没有验证记录就不说成败,只说「没判定」
+        add(f"本次运行没有产生验证记录(run 状态:`{data.outcome}`),"
+            "无法判定是否达标——流程跑通不等于浇水达标,不能算作一次成功的闭环。")
     add("")
 
-    # ── 二、逐轮对照 ──
+    # ── 逐轮对照 ──
     if data.rounds:
-        add("## 二、逐轮对照")
+        heading("逐轮对照")
         add("")
         add("| 轮次 | 浇水时长 | 基线 | 复测 | 目标区间 | 缺口 | 达成率 | 置信度 | 判定 |")
         add("| ---- | -------- | ---- | ---- | -------- | ---- | ------ | ------ | ---- |")
@@ -111,19 +125,21 @@ def render_report(data: ReportData) -> str:
                 f"{VERDICT_LABEL.get(item.verdict, item.verdict)} |")
         add("")
 
-    # ── 三、诊断与修正(证据链的关键一段) ──
-    add("## 三、诊断与修正")
+    # ── 诊断与修正(证据链的关键一段) ──
+    heading("诊断与修正")
     add("")
     corrections = [r for r in data.rounds if r.note and r.verdict in {"failed", "needs_human"}]
     if corrections:
         for item in corrections:
             add(f"- **第 {item.round_no} 轮**:缺口 {_fmt(item.gap)} → {item.note}")
     else:
-        add("- 首轮即达标,无需修正。")
+        # 别写成「首轮即达标」:达成率 94.85% 判 success 是因为过了 PRD 11.3 的 60% 线,
+        # 不是已经命中目标区间。措辞得对得上数字。
+        add("- 首轮达成率已达通过线(≥60%),无需修正。")
     add("")
 
-    # ── 四、执行时间线 ──
-    add("## 四、执行时间线")
+    # ── 执行时间线 ──
+    heading("执行时间线")
     add("")
     if data.timeline:
         add("| 时间 | 节点 | 事件 | 状态 | 耗时 |")
@@ -137,9 +153,9 @@ def render_report(data: ReportData) -> str:
         add("- 无事件记录。")
     add("")
 
-    # ── 五、置信度明细 ──
+    # ── 置信度明细 ──
     if final:
-        add("## 五、置信度明细")
+        heading("置信度明细")
         add("")
         add(f"- 综合 **{final.confidence * 100:.0f}%**(权重:数据质量 0.5 / 规则交叉 0.3 / 一致性 0.2)")
         if data.confidence_reasons:
@@ -153,9 +169,9 @@ def render_report(data: ReportData) -> str:
             add("- ℹ️ 执行前基线已在目标区间内,本轮本无需作业。")
         add("")
 
-    # ── 六、报警 ──
+    # ── 报警 ──
     if data.alerts:
-        add("## 六、本轮报警")
+        heading("本轮报警")
         add("")
         for alert in data.alerts:
             add(f"- `{alert.get('level', 'info')}` **{alert.get('source', 'agent')}**："
