@@ -77,3 +77,23 @@
 - `source` 是 `raise_alert` tool schema 的**可选**字段，LLM 可以不传：缺省由运行时按当前 Agent 自动填充（`agents/context.py` 的 ContextVar）。
 - 缺 `agent:` 前缀的取值一律按「平台」兜底渲染，不报错、不空白。
 
+## 7. 画布执行事件(REQ-F-013)
+
+工作流引擎每推进一个节点推一条事件（WS），前端据此类点亮画布。四类，字段固定：
+
+| type | 时机 | 字段 |
+| ---- | ---- | ---- |
+| `run_started` | 一轮执行开始 | `run_id` `wf_key` `trigger` `node_count` `ts` |
+| `node_started` | 节点开始 | `run_id` `node_id` `node_type` `name` `agent_key` `ts` |
+| `node_finished` | 节点结束 | `run_id` `node_id` `node_type` `name` `agent_key` `status` `output` `error` `degraded` `duration_ms` `ts` |
+| `run_finished` | 一轮执行结束 | `run_id` `status` `rounds` `duration_ms` `error` `ts` |
+
+约定：
+
+- `status`：节点取 `running` / `done` / `failed` / `skipped`，run 取 `running` / `success` / `failed`；
+- **没走到的分支节点不会有任何事件**（如决策为 none 时 `n9/n10/n11` 全程静默），前端保持默认态，不要自己补动画；
+- **Self-Loop 会让同一个 `node_id` 出现多次** `node_started`/`node_finished`（验证官每轮都跑）。画布按到达顺序播，**不要按 `node_id` 去重**，轮次用 `run_finished.rounds` 或事件出现次数区分；
+- `degraded=true` 的 agent 节点按第 5 节显示降级徽章；
+- 顺序保证：`run_started` 一定第一个、`run_finished` 一定最后一个，每个 `node_started` 都有配对的 `node_finished`（含 end 节点）——据此可以让「卡在进行中」的节点永远有归宿。
+
+
