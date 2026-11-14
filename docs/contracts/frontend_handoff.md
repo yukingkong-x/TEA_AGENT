@@ -9,7 +9,7 @@
 
 ## 0. 先说结论：不是后端缺接口
 
-后端 34 条 `/api` 路由 + 1 条 WS 全部就绪，字段、枚举、分页格式已冻结。
+后端 35 条 `/api` 路径（43 个操作）+ 1 条 WS 全部就绪，字段、枚举、分页格式已冻结。
 
 前端（`origin/feature/frontend-dashboard` @ `ed64a88`）已经接上 REST + WS：
 `src/api/socket.ts` 把 1.1 的三处坑全修了（URL 兜底 / `onmessage` / 20s ping，还补了指数退避重连），
