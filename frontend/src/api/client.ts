@@ -56,6 +56,8 @@ function humanizeDetail(detail: unknown): string {
 type Options = {
   method?: 'GET' | 'POST' | 'PUT' | 'DELETE'
   body?: unknown
+  /** 文件上传走这个：浏览器自己带 boundary，不要手动设 Content-Type */
+  form?: FormData
   query?: Record<string, string | number | boolean | null | undefined>
   timeoutMs?: number
   signal?: AbortSignal
@@ -74,7 +76,7 @@ function buildUrl(path: string, query?: Options['query']): string {
 }
 
 export async function request<T>(path: string, options: Options = {}): Promise<T> {
-  const { method = 'GET', body, query, timeoutMs = 8000, signal } = options
+  const { method = 'GET', body, form, query, timeoutMs = 8000, signal } = options
 
   const controller = new AbortController()
   const timer = window.setTimeout(() => controller.abort(), timeoutMs)
@@ -82,10 +84,12 @@ export async function request<T>(path: string, options: Options = {}): Promise<T
   signal?.addEventListener('abort', onAbort)
 
   try {
+    const payload = form ?? (body === undefined ? undefined : JSON.stringify(body))
+    const headers = form || body === undefined ? undefined : { 'Content-Type': 'application/json' }
     const res = await fetch(buildUrl(path, query), {
       method,
-      headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      headers,
+      body: payload,
       signal: controller.signal,
     })
 
@@ -126,4 +130,7 @@ export const api = {
     request<T>(path, { method: 'POST', body, query, timeoutMs }),
   put: <T>(path: string, body?: unknown) => request<T>(path, { method: 'PUT', body }),
   del: <T>(path: string, query?: Options['query']) => request<T>(path, { method: 'DELETE', query }),
+  /** multipart/form-data（知识库上传） */
+  upload: <T>(path: string, form: FormData, timeoutMs = 60_000) =>
+    request<T>(path, { method: 'POST', form, timeoutMs }),
 }

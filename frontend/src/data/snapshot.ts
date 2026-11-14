@@ -11,6 +11,10 @@ export type Device = {
   seriesName: string
   unit: string
   series: number[]
+  /** 主指标的 metric key（temperature_c / soil_moisture / pump_seconds），拉历史曲线要用 */
+  metric?: string
+  /** 后端 is_mock：Mock 设备 id 带前缀，展示上要区分 */
+  isMock?: boolean
   x: number
   y: number
 }

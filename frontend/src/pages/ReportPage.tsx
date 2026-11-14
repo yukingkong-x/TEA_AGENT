@@ -3,8 +3,15 @@ import { ConfidenceGauge } from '../components/ReportGauges'
 import { Markdown } from '../components/Markdown'
 import { PageFrame } from '../components/PageFrame'
 import { ReportTrend } from '../components/ReportTrend'
-import { dailyMarkdown, patrolRuns, type PatrolRound } from '../data/patrolReport'
+import { dailyMarkdown, formatAchievement, patrolRuns, type PatrolRound } from '../data/patrolReport'
 import { CONFIDENCE_WEIGHTS, NEEDS_HUMAN_THRESHOLD, pct, raw01, weightedConfidence } from '../lib/units'
+
+/** 结果徽章：转人工 > 基线缺失 > 闭环/未达标 */
+function roundResultLabel(handedOff: boolean, closed: boolean, missing: boolean) {
+  if (handedOff) return '转人工'
+  if (missing) return '基线缺失 · 算不出'
+  return closed ? '闭环' : '未达标'
+}
 
 export function ReportPage() {
   const [runId, setRunId] = useState(patrolRuns[0].id)
@@ -101,17 +108,19 @@ function useGrow(ms = 1100) {
   return progress
 }
 
-function RateRing({ rate, color }: { rate: number; color: string }) {
+function RateRing({ rate, color, missing }: { rate: number; color: string; missing?: boolean }) {
   const progress = useGrow()
   const radius = 72
   const stroke = 16
   const size = 188
   const center = size / 2
   const length = 2 * Math.PI * radius
+  // 基线缺失时环不填充、显示「算不出来」——不能画成 0%（0% 会被误读成「浇了没效果」）
+  const filled = missing ? 0 : rate
 
   return (
     // rate 是 0-100（contract 第 10 节 achievement 量纲），别再 ×100
-    <div className="relative h-[188px] w-[188px] shrink-0" aria-label={`达成率 ${pct(rate)}`}>
+    <div className="relative h-[188px] w-[188px] shrink-0" aria-label={missing ? '达成率算不出来（基线缺失）' : `达成率 ${pct(rate)}`}>
       <svg viewBox={`0 0 ${size} ${size}`} className="h-full w-full" aria-hidden="true">
         <circle cx={center} cy={center} r={radius} fill="none" stroke="#E7EEE9" strokeWidth={stroke} />
         <circle
@@ -122,14 +131,18 @@ function RateRing({ rate, color }: { rate: number; color: string }) {
           stroke={color}
           strokeWidth={stroke}
           strokeLinecap="round"
-          strokeDasharray={`${length * (rate / 100) * progress} ${length}`}
+          strokeDasharray={`${length * (filled / 100) * progress} ${length}`}
           transform={`rotate(-90 ${center} ${center})`}
         />
       </svg>
       <div className="pointer-events-none absolute inset-0 grid place-items-center text-center">
         <div>
-          <span className="num block text-[28px] font-semibold leading-none text-paper">{pct(rate * progress)}</span>
-          <span className="mt-1 block text-xs leading-none text-mute">达成率</span>
+          {missing ? (
+            <span className="block text-base font-semibold leading-none text-mute">算不出来</span>
+          ) : (
+            <span className="num block text-[28px] font-semibold leading-none text-paper">{pct(rate * progress)}</span>
+          )}
+          <span className="mt-1 block text-xs leading-none text-mute">{missing ? '基线缺失' : '达成率'}</span>
         </div>
       </div>
     </div>
@@ -139,10 +152,18 @@ function RateRing({ rate, color }: { rate: number; color: string }) {
 function RoundBlock({ round }: { round: PatrolRound }) {
   // 置信度是 0-100，阈值 60 直接比，别拿 0.6 比
   const handedOff = round.confidence < NEEDS_HUMAN_THRESHOLD
-  const closed = round.rate >= 60
-  const result = handedOff ? '转人工' : closed ? '闭环' : '未达标'
-  const resultClass = handedOff ? 'bg-[#F3E8FF] text-[#6D28D9]' : closed ? 'bg-panel2 text-tea' : 'bg-[#FFF4CC] text-[#8A6414]'
-  const ringColor = handedOff ? '#6D28D9' : closed ? '#1F7A45' : '#E4B423'
+  // 基线缺失时达成率「算不出来」，不能当成未达标/闭环来判
+  const missing = Boolean(round.baselineMissing) || round.baseline === null
+  const closed = !missing && round.rate >= 60
+  const result = roundResultLabel(handedOff, closed, missing)
+  const resultClass = handedOff
+    ? 'bg-[#F3E8FF] text-[#6D28D9]'
+    : missing
+      ? 'bg-[#EEF1F4] text-[#5A6474]'
+      : closed
+        ? 'bg-panel2 text-tea'
+        : 'bg-[#FFF4CC] text-[#8A6414]'
+  const ringColor = handedOff ? '#6D28D9' : missing ? '#86909C' : closed ? '#1F7A45' : '#E4B423'
 
   return (
     <section className="rounded-2xl bg-[#F7F8FA] px-5 py-5">
@@ -152,11 +173,16 @@ function RoundBlock({ round }: { round: PatrolRound }) {
           <dl className="mt-4 grid gap-3 sm:grid-cols-2">
             <div className="rounded-xl bg-panel px-3 py-3">
               <dt className="text-xs leading-none text-mute">基线</dt>
+              {/* baseline 可能为 null（传感器没给浇水前读数），显示「—」，别 ?? 0 */}
               <dd className="num mt-1 text-base text-paper">{pct(round.baseline, 1)}</dd>
             </div>
             <div className="rounded-xl bg-panel px-3 py-3">
               <dt className="text-xs leading-none text-mute">复测</dt>
               <dd className="num mt-1 text-base text-paper">{pct(round.measured, 1)}</dd>
+            </div>
+            <div className="rounded-xl bg-panel px-3 py-3">
+              <dt className="text-xs leading-none text-mute">达成率</dt>
+              <dd className="num mt-1 text-base text-paper">{formatAchievement(round)}</dd>
             </div>
           </dl>
           <div className="mt-3 overflow-hidden rounded-xl border border-line bg-panel">
@@ -186,7 +212,7 @@ function RoundBlock({ round }: { round: PatrolRound }) {
             </table>
           </div>
         </div>
-        <RateRing rate={round.rate} color={ringColor} />
+        <RateRing rate={round.rate} color={ringColor} missing={missing} />
       </div>
     </section>
   )

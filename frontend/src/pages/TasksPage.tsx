@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState, type MouseEvent, type ReactNode } from 'react'
 import { PageFrame } from '../components/PageFrame'
+import { ApiError } from '../api/client'
+import { endpoints } from '../api/endpoints'
 import { dashboardSocket } from '../api/socket'
-import type { DashMessage, TaskStatusEventDto } from '../api/types'
+import type { DashMessage, TaskDto, TaskEventDto, TaskStatusEventDto } from '../api/types'
 import {
   badgeFor,
   formatClock,
@@ -101,8 +103,62 @@ function applyEvent(rows: TaskRow[], data: TaskStatusEventDto, at: string): Task
   return rows.map((row, i) => (i === index ? next : row))
 }
 
+/** 后端 TaskDto → 表格行。target/elapsed 后端没有，前端拼算。 */
+function fromDto(dto: TaskDto): TaskRow {
+  const payload = (dto.payload ?? {}) as { device_id?: string }
+  const target = dto.assigned_device ?? dto.assigned_agent ?? payload.device_id ?? '—'
+  const start = parseTs(dto.created_at ?? undefined)?.getTime()
+  const end = parseTs(dto.updated_at ?? undefined)?.getTime()
+  const elapsed = start && end ? `${Math.max(0, Math.round((end - start) / 1000))}s` : '—'
+  return {
+    id: dto.task_no,
+    type: dto.type as TaskRow['type'],
+    target,
+    priority: dto.priority,
+    score: dto.score,
+    status: dto.status as TaskStatus,
+    retry_count: dto.retry_count,
+    elapsed,
+    created: dto.created_at ?? '',
+    run_id: dto.run_id,
+    assigned_agent: dto.assigned_agent,
+    assigned_device: dto.assigned_device,
+    result: (dto.result as TaskRow['result']) ?? null,
+    trace: [],
+  }
+}
+
+/** GET /api/tasks/{no}/events 的一条事件 → 轨迹步（队长 11.14 上线） */
+function toTraceStep(event: TaskEventDto): TaskTrace {
+  const payload = (event.payload ?? {}) as {
+    confidence?: number
+    achievement?: number
+    note?: string
+    baseline_missing?: boolean
+    verification_id?: number
+  }
+  const verify = event.event === 'verify'
+  const bits: string[] = []
+  if (verify) {
+    if (payload.baseline_missing) bits.push('基线缺失，达成率算不出')
+    else if (typeof payload.achievement === 'number') bits.push(`达成率 ${payload.achievement.toFixed(2)}%`)
+    if (typeof payload.confidence === 'number') bits.push(`置信度 ${payload.confidence.toFixed(1)}%`)
+    if (payload.note) bits.push(payload.note)
+  }
+  return {
+    from: (event.from ?? null) as TaskTrace['from'],
+    to: event.to as TaskStatus,
+    at: event.at,
+    reason: (event.reason ?? undefined) as TaskTrace['reason'],
+    note: bits.length ? bits.join(' · ') : undefined,
+    kind: verify ? 'verify' : 'status',
+    actor: event.actor ?? undefined,
+  }
+}
+
 export function TasksPage() {
-  const [rows, setRows] = useState<TaskRow[]>(tasks)
+  const [rows, setRows] = useState<TaskRow[]>([])
+  const [source, setSource] = useState<'backend' | 'sample' | 'loading'>('loading')
   const [picked, setPicked] = useState<TaskStatus[]>([])
   const [type, setType] = useState<(typeof taskTypes)[number]['id']>('all')
   const [range, setRange] = useState<(typeof timeOptions)[number]['id']>('all')
@@ -113,7 +169,32 @@ export function TasksPage() {
   const [menu, setMenu] = useState<{ kind: 'status' | 'time'; top: number; left: number } | null>(null)
   const [openId, setOpenId] = useState<string | null>(null)
 
-  // 调度器的 task_status 是轨迹唯一数据源（后端没有 task_events 表，刷新后本地累积会丢）
+  // 表格数据源：GET /api/tasks（最近 200 条），轨迹是抽屉里再按任务拉 events
+  useEffect(() => {
+    let alive = true
+    endpoints
+      .tasks({ page: 1, page_size: 200 })
+      .then((page) => {
+        if (!alive) return
+        setRows((current) => {
+          // 保留 WS 先到的新任务，避免请求返回时把它们覆盖掉
+          const fetched = page.items.map(fromDto)
+          const known = new Set(fetched.map((row) => row.id))
+          return fetched.concat(current.filter((row) => !known.has(row.id)))
+        })
+        setSource('backend')
+      })
+      .catch(() => {
+        if (!alive) return
+        setRows((current) => (current.length ? current : tasks))
+        setSource('sample')
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  // 调度器的 task_status 增量续播
   useEffect(() => {
     const off = dashboardSocket.on<TaskStatusEventDto>('task_status', (data, message) => {
       if (!data?.task_no) return
@@ -258,7 +339,21 @@ export function TasksPage() {
           </table>
         </div>
         <footer className="flex h-14 shrink-0 items-center justify-between gap-3 border-t border-[#EEF0F3] px-5 text-sm text-dim">
-          <span>共 {view.length} 条</span>
+          <span className="flex items-center gap-2">
+            共 {view.length} 条
+            <span
+              className={`inline-flex h-6 items-center rounded-btn px-2 text-xs leading-none ${
+                source === 'backend'
+                  ? 'bg-[#E5F6EA] text-[#1F7A3A]'
+                  : source === 'sample'
+                    ? 'bg-[#FBF3E6] text-[#9A5B12]'
+                    : 'bg-[#EEF1EF] text-[#5C675F]'
+              }`}
+              title="表格数据来自 GET /api/tasks（最近 200 条），状态多选/时间/关键词在前端过滤"
+            >
+              {source === 'backend' ? '后端数据' : source === 'sample' ? '本地样例' : '载入中'}
+            </span>
+          </span>
           <div className="flex items-center gap-2">
             <select
               aria-label="每页条数"
@@ -441,8 +536,78 @@ function TraceStep({ step }: { step: TaskTrace }) {
   )
 }
 
+/** 浇水后要等渗透才复测：前后端都认 90s（PRD 11.2 / 队长的验证引擎） */
+const PENETRATION_S = 90
+
+/** 渗透期倒计时：返回还剩多少秒（0 = 可以复测） */
+function usePenetration(startAt: string | undefined) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [])
+  const start = parseTs(startAt ?? undefined)?.getTime()
+  if (start === undefined) return 0
+  const left = Math.ceil((start + PENETRATION_S * 1000 - now) / 1000)
+  return left > 0 ? left : 0
+}
+
 function TraceDrawer({ task, onClose }: { task: TaskRow; onClose: () => void }) {
   const badge = badgeFor(task)
+  const [trace, setTrace] = useState<TaskTrace[]>(task.trace)
+  const [state, setState] = useState<'loading' | 'ok' | 'fail'>('loading')
+  const [verify, setVerify] = useState<{ busy: boolean; text: string | null; ok: boolean }>({
+    busy: false,
+    text: null,
+    ok: true,
+  })
+
+  // 队长 11.14：GET /api/tasks/{no}/events 全量回放，打开抽屉先拉一次，
+  // 之后 WS task_status 的增量已经并进 task.trace，这里把两边按 at 排序合并即可。
+  useEffect(() => {
+    let alive = true
+    setState('loading')
+    endpoints
+      .taskEvents(task.id)
+      .then((page) => {
+        if (!alive) return
+        setTrace(page.items.map(toTraceStep))
+        setState('ok')
+      })
+      .catch(() => {
+        if (!alive) return
+        setTrace(task.trace)
+        setState('fail')
+      })
+    return () => {
+      alive = false
+    }
+  }, [task.id])
+
+  // 抽屉开着的时候 WS 还在往里写 task.trace：把事件接口没覆盖到的新step 续上，
+  // 按 (from,to,at) 去重，否则同一跳会画两遍
+  const merged = useMemo(() => {
+    const seen = new Set(trace.map((step) => `${step.from ?? ''}>${step.to}@${step.at}`))
+    const extra = task.trace.filter((step) => !seen.has(`${step.from ?? ''}>${step.to}@${step.at}`))
+    return extra.length ? trace.concat(extra) : trace
+  }, [trace, task.trace])
+
+  // 只有「浇过水」的任务才需要等渗透：device_cmd 类型的最后一条状态就是浇水完成时刻
+  const lastAt = merged.length ? merged[merged.length - 1].at : task.created
+  const waitLeft = usePenetration(task.type === 'device_cmd' ? lastAt : undefined)
+  const canVerify = task.type === 'device_cmd' && !task.result?.rejected && waitLeft === 0 && !verify.busy
+
+  async function runVerify() {
+    setVerify({ busy: true, text: null, ok: true })
+    try {
+      await endpoints.verifyTask(task.id)
+      setVerify({ busy: false, text: '复测已下发，结果会以 verify 事件回到这条轨迹里（虚线那一跳）。', ok: true })
+    } catch (err) {
+      const msg = err instanceof ApiError ? (err.notReady ? '验证引擎接入中（SEAM_NOT_READY）' : err.message) : String(err)
+      setVerify({ busy: false, text: `复测失败：${msg}`, ok: false })
+    }
+  }
+
   return (
     <div className="fixed inset-0 z-40 flex justify-end">
       <button type="button" className="absolute inset-0 bg-paper/30" aria-label="关闭轨迹" onClick={onClose} />
@@ -461,21 +626,58 @@ function TraceDrawer({ task, onClose }: { task: TaskRow; onClose: () => void }) 
         </header>
         <div className="flex-1 overflow-auto px-5 py-4">
           <h3 className="text-paper">状态轨迹</h3>
-          <p className="mt-1 text-xs leading-normal text-mute">每一步都来自调度器的 task_status 事件，按 from → to 原样展示。</p>
+          <p className="mt-1 text-xs leading-normal text-mute">
+            打开时从 /api/tasks/{task.id}/events 全量回放，之后接 WS task_status 增量；按 from → to 原样画，验证那一跳是虚线。
+          </p>
+          {state === 'fail' ? (
+            <p className="mt-2 text-xs leading-normal text-[#9A5B12]">事件接口没通，下面只显示本次会话里收到的 WS 事件。</p>
+          ) : null}
+          {state === 'loading' && trace.length === 0 ? (
+            <p className="mt-3 text-sm leading-normal text-mute">正在拉事件…</p>
+          ) : null}
           <ol className="mt-4 grid gap-0">
-            {task.trace.map((step, index) => (
+            {merged.map((step, index) => (
               <li key={`${step.from ?? 'new'}-${step.to}-${step.at}-${index}`} className="grid grid-cols-[16px_minmax(0,1fr)] gap-3">
                 <span className="flex flex-col items-center">
-                  <span className={`mt-1 h-2.5 w-2.5 rounded-full ${isHoldOffline(step) ? 'bg-[#C9CDD4]' : 'bg-tea'}`} />
-                  {index < task.trace.length - 1 ? <span className="w-px flex-1 bg-line" /> : null}
+                  {step.kind === 'verify' ? (
+                    <span className="mt-1 h-2.5 w-2.5 rounded-full border border-dashed border-[#6D28D9] bg-panel" />
+                  ) : (
+                    <span className={`mt-1 h-2.5 w-2.5 rounded-full ${isHoldOffline(step) ? 'bg-[#C9CDD4]' : 'bg-tea'}`} />
+                  )}
+                  {index < merged.length - 1 ? (
+                    <span className={`w-px flex-1 ${step.kind === 'verify' ? 'bg-[repeating-linear-gradient(to_bottom,#6D28D9_0_3px,transparent_3px_6px)]' : 'bg-line'}`} />
+                  ) : null}
                 </span>
                 <span className="pb-4">
                   <TraceStep step={step} />
-                  <time className="num mt-2 block text-xs leading-none text-mute">{formatClock(step.at)}</time>
+                  <time className="num mt-2 block text-xs leading-none text-mute">
+                    {formatClock(step.at)}
+                    {step.actor ? ` · ${step.actor}` : ''}
+                  </time>
                 </span>
               </li>
             ))}
           </ol>
+
+          {task.type === 'device_cmd' ? (
+            <div className="mt-2 rounded-btn border border-line px-3 py-3">
+              <p className="text-sm leading-normal text-paper">复测</p>
+              <p className="mt-1 text-xs leading-normal text-mute">
+                浇完水要等渗透期 ≥{PENETRATION_S}s 才有 3 条稳定读数，早复测会拿到偏低值误判成未达标。
+              </p>
+              <button
+                type="button"
+                disabled={!canVerify}
+                onClick={() => void runVerify()}
+                className="mt-2 h-9 rounded-btn bg-tea px-3 text-sm text-white hover:bg-teaHover disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {verify.busy ? '复测中…' : waitLeft > 0 ? `等渗透期 ${waitLeft}s` : '立即复测'}
+              </button>
+              {verify.text ? (
+                <p className={`mt-2 text-xs leading-normal ${verify.ok ? 'text-mute' : 'text-danger'}`}>{verify.text}</p>
+              ) : null}
+            </div>
+          ) : null}
           {task.result ? (
             <>
               <h3 className="mt-2 text-paper">结果</h3>

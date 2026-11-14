@@ -1,10 +1,12 @@
 import { useState } from 'react'
 import { PageFrame } from '../components/PageFrame'
+import { AlertBar } from '../components/AlertBar'
 import { DeviceDrawer } from '../components/DeviceDrawer'
 import { GardenMap } from '../components/GardenMap'
 import { MetricTile } from '../components/MetricTile'
 import { SoilChart } from '../components/SoilChart'
 import type { Device } from '../data/snapshot'
+import { useAlerts } from '../hooks/useAlerts'
 import { useDashboard } from '../hooks/useDashboard'
 import { useShell } from '../shell/ShellContext'
 
@@ -13,6 +15,7 @@ const DRY_LINE = 40
 export function DashboardPage() {
   const [device, setDevice] = useState<Device | null>(null)
   const { devices, metrics, soilSeries, soilCurrent, source, loading, error, refresh } = useDashboard()
+  const { pending, ack } = useAlerts()
   const { live } = useShell()
 
   const soil = soilCurrent ?? 38.5
@@ -59,6 +62,7 @@ export function DashboardPage() {
               ) : null}
             </div>
           </header>
+          <AlertBar alerts={pending} onAck={(id) => void ack(id)} />
           <section className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_220px]">
             <div className="relative h-[280px] overflow-hidden rounded-card border border-line sm:h-[360px] lg:h-full lg:min-h-[420px]">
               <img src="/garden/tea-rows.jpg" alt="层层茶垄延伸到远山" className="absolute inset-0 h-full w-full object-cover" />

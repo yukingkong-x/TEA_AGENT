@@ -10,12 +10,15 @@ function achievement(baseline: number, measured: number) {
 
 export type PatrolRound = {
   round: number
-  baseline: number
+  /** 可能为 null（基线缺失）：显示「—」，不要 ?? 0 */
+  baseline: number | null
   measured: number
   /** 达成率，0-100（%） */
   rate: number
   /** 置信度，0-100；60 是转人工阈值 */
   confidence: number
+  /** 基线缺失时 achievement 是「算不出来」，不是 0% */
+  baselineMissing?: boolean
   /** 三路原始分，0-1（contract 第 10 节），只用于展示构成，别当百分比 */
   detail: ConfidenceDetail
   diagnosis: string
@@ -96,11 +99,19 @@ export const patrolRuns: PatrolRun[] = [
   },
 ]
 
+/** 基线缺失 / 基线为 null 时达成率「算不出来」，不能写成 0% */
+export function formatAchievement(round: PatrolRound) {
+  if (round.baselineMissing || round.baseline === null) return '算不出来（基线缺失）'
+  if (!Number.isFinite(round.rate)) return '—'
+  return `${round.rate.toFixed(2)}%`
+}
+
 export function dailyMarkdown(run: PatrolRun) {
   const lines = [`# ${run.name}`, '', '## 证据链', '']
   for (const round of run.rounds) {
+    const baseline = round.baseline === null ? '—' : `${round.baseline.toFixed(1)}%`
     lines.push(
-      `- 第 ${round.round} 轮：基线 ${round.baseline.toFixed(1)}% → 复测 ${round.measured.toFixed(1)}%，达成率 ${round.rate.toFixed(2)}%，置信度 ${round.confidence.toFixed(2)}%。诊断：${round.diagnosis}修正：${round.correction}`,
+      `- 第 ${round.round} 轮：基线 ${baseline} → 复测 ${round.measured.toFixed(1)}%，达成率 ${formatAchievement(round)}，置信度 ${round.confidence.toFixed(2)}%。诊断：${round.diagnosis}修正：${round.correction}`,
     )
   }
   lines.push('', '## 结论', '', run.outcome === '闭环成功' ? '达成率与置信度均不低于 60%，闭环成功。' : '置信度低于 60%，本轮挂起，转人工。')

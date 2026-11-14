@@ -15,15 +15,14 @@ export const WS_URL =
 type Handler = (message: DashMessage) => void
 
 const PING_INTERVAL = 20_000
-const RECONNECT_BASE = 1_000
-const RECONNECT_MAX = 10_000
+/** 队长定的：断了固定 5s 重连一次，不做退避——彩排时后端重启要能秒回 */
+const RECONNECT_DELAY = 5_000
 
 export class DashboardSocket {
   private socket: WebSocket | null = null
   private handlers = new Set<Handler>()
   private pingTimer = 0
   private retryTimer = 0
-  private attempt = 0
   private stopped = false
 
   constructor(private readonly url: string = WS_URL) {}
@@ -38,7 +37,6 @@ export class DashboardSocket {
     this.socket = socket
 
     socket.onopen = () => {
-      this.attempt = 0
       this.emitLocal({ type: '__open', data: {}, ts: Date.now() })
       this.pingTimer = window.setInterval(() => {
         if (socket.readyState === WebSocket.OPEN) socket.send('{"type":"ping"}')
@@ -62,9 +60,7 @@ export class DashboardSocket {
       this.socket = null
       this.emitLocal({ type: '__close', data: {}, ts: Date.now() })
       if (this.stopped) return
-      const delay = Math.min(RECONNECT_BASE * 2 ** this.attempt, RECONNECT_MAX)
-      this.attempt += 1
-      this.retryTimer = window.setTimeout(() => this.connect(), delay)
+      this.retryTimer = window.setTimeout(() => this.connect(), RECONNECT_DELAY)
     }
 
     socket.onerror = () => socket.close()

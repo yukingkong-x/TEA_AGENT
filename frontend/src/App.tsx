@@ -47,12 +47,13 @@ export function App() {
       <ConfirmDialog
         open={confirmOpen}
         title="开始巡园"
-        body="按默认工作流走一轮 A区茶垄。这一步只进入画布，不会给设备下指令。"
+        body="按默认工作流走一轮 A区茶垄。点确认后画布会立刻向后端下发执行，节点动画跟着引擎事件亮。"
         confirmLabel="开始巡园"
         onClose={() => setConfirmOpen(false)}
         onConfirm={() => {
           setConfirmOpen(false)
-          navigate('/canvas', { state: { armed: true } })
+          // 不在这一层发 POST：跳过去由画布自己下发，WS 订阅已挂好，前几个节点的事件不会漏。
+          navigate('/canvas', { state: { arm: true } })
         }}
       />
     </div>

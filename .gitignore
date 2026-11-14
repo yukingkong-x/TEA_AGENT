@@ -224,3 +224,6 @@ __marimo__/
 node_modules/
 __pycache__/
 .pio/
+# 本地缓存与截图（审阅工具产物）
+.npm-cache/
+shots/
