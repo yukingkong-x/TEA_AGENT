@@ -229,4 +229,6 @@ logs/
 uploads/
 chroma_data/
 mysql_data/
+data/knowledge/
+backend/data/
 *.key
