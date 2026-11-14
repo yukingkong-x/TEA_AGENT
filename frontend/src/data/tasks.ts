@@ -217,19 +217,18 @@ export const tasks: TaskRow[] = [
   },
 ]
 
+// 后端 tasks.type 只有这 5 个（PRD 6.6）：agent_call / device_cmd / verify / report / selfloop。
+// 之前这里的 `alert` 后端不存在，按它筛必 400。
 export const taskTypes = [
   { id: 'all', label: '全部类型' },
+  { id: 'agent_call', label: '智能体调用' },
   { id: 'device_cmd', label: '设备指令' },
-  { id: 'alert', label: '报警' },
   { id: 'verify', label: '验证' },
+  { id: 'report', label: '报告' },
 ] as const
 
-export function formatClock(iso: string) {
-  const date = new Date(iso)
-  const month = `${date.getMonth() + 1}`.padStart(2, '0')
-  const dayNum = `${date.getDate()}`.padStart(2, '0')
-  const hour = `${date.getHours()}`.padStart(2, '0')
-  const minute = `${date.getMinutes()}`.padStart(2, '0')
-  const second = `${date.getSeconds()}`.padStart(2, '0')
-  return `${month}-${dayNum} ${hour}:${minute}:${second}`
-}
+/**
+ * 统一走 lib/parseTs：后端给的是 `2026-11-14 09:30:00`（空格分隔），
+ * 原生 new Date() 在 Safari / iPad 上直接 Invalid Date。
+ */
+export { formatClock, formatTime, parseTs, tsMillis } from '../lib/parseTs'
