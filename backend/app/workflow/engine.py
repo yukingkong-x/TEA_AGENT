@@ -346,14 +346,23 @@ def is_ready() -> bool:
     return _deps is not None
 
 
+def _raise_not_ready(reason: str) -> None:
+    """优先抛基座的 SeamNotReady(路由统一转 503 + SEAM_NOT_READY);基座未合入时退化为本地异常。"""
+    try:
+        from app.seams import SeamNotReady  # 公共接缝层
+    except Exception:  # noqa: BLE001 基座还没合进这支分支
+        raise WorkflowNotReady(f"start_run 尚未就绪:{reason}")
+    raise SeamNotReady("start_run", reason)
+
+
 def start_run(wf_id: int, trigger: str = "manual") -> int:
     """接缝入口(PRD 7.4 / SL-2):同步返回 run_id,执行在后台任务里推进。
 
-    未接线时抛 WorkflowNotReady —— 由 `seams` 翻译成 503 SEAM_NOT_READY,
+    未接线时抛基座的 SeamNotReady —— 由 `seams` 翻译成 503 SEAM_NOT_READY,
     与基座「不造假数据」的约定一致。
     """
     if _deps is None:
-        raise WorkflowNotReady("工作流引擎未接线:等待基座注入 EngineDeps")
+        _raise_not_ready("等待基座注入 EngineDeps(bootstrap 里 configure)")
     dag = _deps.load_workflow(wf_id)
     run_id = _deps.create_run(wf_id, trigger)
     engine = WorkflowEngine(

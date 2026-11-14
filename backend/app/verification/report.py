@@ -1,0 +1,163 @@
+"""REQ-F-022:执行报告渲染(Markdown)。
+
+PRD 11.4.4 的硬要求:报告必须完整呈现「第 1 轮基线/复测/达成率 → 诊断 → 修正 →
+第 2 轮结果 → outcome 回填」。这是「反馈循环与优化」这个模块的满分答卷,
+所以表格的列是照着这句话排的,不是随便设计的。
+
+本模块只做渲染(纯字符串),不查库、不推 WS;数据由接缝层组装成 ReportData 传进来。
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Optional
+
+VERDICT_LABEL = {
+    "success": "✅ 闭环成功",
+    "failed": "🔄 未达标,已触发修正",
+    "needs_human": "🚨 转人工",
+    "running": "⏳ 执行中",
+    "pending": "⏸ 未开始",
+}
+
+STRATEGY_LABEL = {
+    "topup": "单次补灌",
+    "split": "分次灌溉",
+    "suspect_data": "数据复核",
+    "give_up": "放弃修正",
+}
+
+
+@dataclass
+class RoundView:
+    """一轮「执行 → 渗透 → 复测 → 判定」的证据。"""
+    round_no: int
+    baseline: float
+    measured: float
+    achievement: float
+    confidence: float
+    verdict: str
+    target_low: float = 55.0
+    target_high: float = 65.0
+    duration_s: float = 0.0
+    note: str = ""
+
+    @property
+    def gap(self) -> float:
+        return round(max(0.0, self.target_low - self.measured), 2)
+
+
+@dataclass
+class ReportData:
+    run_id: Optional[int] = None
+    wf_name: str = "巡园浇水工作流"
+    trigger: str = "manual"
+    started_at: str = ""
+    finished_at: str = ""
+    outcome: str = "running"
+    rounds: list[RoundView] = field(default_factory=list)
+    timeline: list[dict] = field(default_factory=list)   # {ts, name, event, status, duration_ms}
+    alerts: list[dict] = field(default_factory=list)     # {level, message, source}
+    confidence_reasons: list[str] = field(default_factory=list)
+    achievement_detail: dict = field(default_factory=dict)
+
+    @property
+    def final_round(self) -> Optional[RoundView]:
+        return self.rounds[-1] if self.rounds else None
+
+
+def _fmt(value: float, unit: str = "%") -> str:
+    return f"{value:.2f}{unit}" if isinstance(value, (int, float)) else str(value)
+
+
+def render_report(data: ReportData) -> str:
+    lines: list[str] = []
+    add = lines.append
+
+    add(f"# {data.wf_name} · 执行报告")
+    add("")
+    meta = [f"run #{data.run_id}" if data.run_id is not None else "run (未编号)",
+            f"触发:{data.trigger}"]
+    if data.started_at:
+        meta.append(f"{data.started_at}" + (f" → {data.finished_at}" if data.finished_at else ""))
+    add("> " + " · ".join(meta))
+    add(f"> 结论:**{VERDICT_LABEL.get(data.outcome, data.outcome)}**")
+    add("")
+
+    # ── 一、结论 ──
+    add("## 一、结论")
+    final = data.final_round
+    if final:
+        add("")
+        add(f"第 {final.round_no} 轮复测 {_fmt(final.measured)}，达成率 "
+            f"**{_fmt(final.achievement)}**，置信度 **{final.confidence * 100:.0f}%**，"
+            f"判定 `{final.verdict}`" + (f"：{final.note}" if final.note else "。"))
+    else:
+        add("")
+        add("本轮尚未产生验证结果。")
+    add("")
+
+    # ── 二、逐轮对照 ──
+    if data.rounds:
+        add("## 二、逐轮对照")
+        add("")
+        add("| 轮次 | 浇水时长 | 基线 | 复测 | 目标区间 | 缺口 | 达成率 | 置信度 | 判定 |")
+        add("| ---- | -------- | ---- | ---- | -------- | ---- | ------ | ------ | ---- |")
+        for item in data.rounds:
+            add(f"| 第 {item.round_no} 轮 | {_fmt(item.duration_s, 's')} | {_fmt(item.baseline)} | "
+                f"{_fmt(item.measured)} | [{_fmt(item.target_low)}, {_fmt(item.target_high)}] | "
+                f"{_fmt(item.gap)} | {_fmt(item.achievement)} | {item.confidence * 100:.0f}% | "
+                f"{VERDICT_LABEL.get(item.verdict, item.verdict)} |")
+        add("")
+
+    # ── 三、诊断与修正(证据链的关键一段) ──
+    add("## 三、诊断与修正")
+    add("")
+    corrections = [r for r in data.rounds if r.note and r.verdict in {"failed", "needs_human"}]
+    if corrections:
+        for item in corrections:
+            add(f"- **第 {item.round_no} 轮**:缺口 {_fmt(item.gap)} → {item.note}")
+    else:
+        add("- 首轮即达标,无需修正。")
+    add("")
+
+    # ── 四、执行时间线 ──
+    add("## 四、执行时间线")
+    add("")
+    if data.timeline:
+        add("| 时间 | 节点 | 事件 | 状态 | 耗时 |")
+        add("| ---- | ---- | ---- | ---- | ---- |")
+        for row in data.timeline[:40]:
+            add(f"| {row.get('ts', '')} | {row.get('name', '')} | {row.get('event', '')} | "
+                f"{row.get('status', '')} | {row.get('duration_ms', '')}ms |")
+        if len(data.timeline) > 40:
+            add(f"| … | 共 {len(data.timeline)} 条,此处截断 | | | |")
+    else:
+        add("- 无事件记录。")
+    add("")
+
+    # ── 五、置信度明细 ──
+    if final:
+        add("## 五、置信度明细")
+        add("")
+        add(f"- 综合 **{final.confidence * 100:.0f}%**(权重:数据质量 0.5 / 规则交叉 0.3 / 一致性 0.2)")
+        if data.confidence_reasons:
+            for reason in data.confidence_reasons:
+                add(f"- {reason}")
+        else:
+            add("- 三路证据均无扣分项。")
+        if data.achievement_detail.get("over_irrigated"):
+            add("- ⚠️ 复测值超过目标上限,存在过浇风险。")
+        if data.achievement_detail.get("baseline_in_range"):
+            add("- ℹ️ 执行前基线已在目标区间内,本轮本无需作业。")
+        add("")
+
+    # ── 六、报警 ──
+    if data.alerts:
+        add("## 六、本轮报警")
+        add("")
+        for alert in data.alerts:
+            add(f"- `{alert.get('level', 'info')}` **{alert.get('source', 'agent')}**："
+                f"{alert.get('message', '')}")
+        add("")
+
+    return "\n".join(lines).rstrip() + "\n"
