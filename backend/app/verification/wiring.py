@@ -156,7 +156,7 @@ def _save_verification(task_no: str, result) -> int:
             target_high=result.achievement.target_high,
             measured_value=result.achievement.measured,
             achievement=result.achievement.value,
-            confidence=result.confidence.total,
+            confidence=round(result.confidence.total * 100, 2),   # 表里 0-100
             conf_detail_json={
                 "data_quality": result.confidence.data_quality,
                 "rule_cross": result.confidence.rule_cross,
@@ -232,7 +232,7 @@ def _load_run(run_id: int) -> dict:
                 "baseline": _f(v.baseline_value, 0.0),
                 "measured": _f(v.measured_value, 0.0),
                 "achievement": _f(v.achievement, 0.0),
-                "confidence": _f(v.confidence, 0.0),
+                "confidence": _f(v.confidence, 0.0) / 100.0,   # 渲染器按 0-1
                 "verdict": v.conclusion or "failed",
                 "target_low": _f(v.target_low, 55.0),
                 "target_high": _f(v.target_high, 65.0),

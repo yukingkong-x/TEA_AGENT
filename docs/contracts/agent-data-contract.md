@@ -153,3 +153,32 @@
 - 熔断拒绝落 `dead`（不是 `rejected`），显示「熔断拒绝 · 剩余 Ns」用 `result.retry_after_s`；
 - `retry_hold_offline` 的事件里 `from == to == "retrying"`，这是「挂着等设备」，不是 bug，
   前端不要重复播一条"重试"动画。
+## 10. 验证结果与证据链(REQ-F-016/017/018)
+
+`POST /api/verify/{task_no}`（工具 `verify_result` 同源）：
+
+```json
+{"task_no": "task-20261114-0007", "verification_id": 31, "verdict": "failed",
+ "achievement": 39.39, "gap": 15.61, "over_irrigated": false,
+ "confidence": 72.5, "measured": 45.0, "baseline": 38.5, "round_no": 1,
+ "confidence_detail": {"data_quality": 1.0, "rule_cross": 1.0, "consistency": 0.5,
+                       "reasons": ["复测读数偏低 12.3%，与近 24h 均值偏差 2.4σ"]},
+ "correction": {"strategy": "topup", "duration_s": 25.61, "times": 1, "interval_s": 0},
+ "note": "…"}
+```
+
+量纲约定（之前工程里 0-1 与 0-100 混用过，这里钉死）：
+
+| 字段 | 量纲 | 说明 |
+| ---- | ---- | ---- |
+| `achievement` / `gap` | 0-100（%） | 达成率与缺口，PRD 11.1 的百分数 |
+| `confidence` | **0-100** | PRD 11.3 的 60% 阈值即 60.0；DB `verifications.confidence` 同量纲 |
+| `confidence_detail.*` | 0-1 | 三路原始分（0.5/0.3/0.2 权重加权后 ×100 才是上面那项） |
+| `correction.duration_s` | 秒 | 修正动作时长；`times=0` 表示无需作业 |
+
+约定：
+
+- `verdict` 三值：`success` / `failed` / `needs_human`。**`needs_human` 的判定优先于达成率**
+  （浇水后读数大跌时先怀疑数据，而不是继续补水）；
+- `reasons` 是给人看的解释，报告页与任务详情直接列，不要改写成别的措辞；
+- `correction` 为 `null` 表示本轮无需修正（已成功 / 已转人工 / 轮次用尽）。

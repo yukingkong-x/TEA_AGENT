@@ -118,7 +118,8 @@ def verify_task(task_no: str) -> dict:
         "achievement": result.achievement.value,
         "over_irrigated": result.achievement.over_irrigated,
         "gap": result.achievement.gap,
-        "confidence": result.confidence.total,
+        # 对外的置信度统一 0-100（PRD 11.3 的 60% 阈值、reports 表 DECIMAL(5,2) 都是这个量纲）
+        "confidence": round(result.confidence.total * 100, 2),
         "confidence_detail": {
             "data_quality": result.confidence.data_quality,
             "rule_cross": result.confidence.rule_cross,
