@@ -2,13 +2,19 @@ import { useEffect, useRef } from 'react'
 import * as echarts from 'echarts'
 import { soilDay } from '../data/snapshot'
 
-const labels = soilDay.map((_, index) => {
-  const hour = index.toString().padStart(2, '0')
-  return index === soilDay.length - 1 ? '现在' : `${hour}:00`
-})
+function labelsFor(count: number) {
+  const step = Math.max(1, Math.round(24 / Math.max(count, 1)))
+  return Array.from({ length: count }, (_, index) => {
+    if (index === count - 1) return '现在'
+    const back = (count - 1 - index) * step
+    const hour = (new Date().getHours() - back + 48) % 24
+    return `${hour.toString().padStart(2, '0')}:00`
+  })
+}
 
-export function SoilChart() {
+export function SoilChart({ values = soilDay }: { values?: number[] }) {
   const host = useRef<HTMLDivElement>(null)
+  const points = values.length > 1 ? values : soilDay
 
   useEffect(() => {
     const node = host.current
@@ -27,7 +33,7 @@ export function SoilChart() {
       },
       xAxis: {
         type: 'category',
-        data: labels,
+        data: labelsFor(points.length),
         boundaryGap: false,
         axisLine: { lineStyle: { color: '#E3EBE6' } },
         axisTick: { show: false },
@@ -35,13 +41,13 @@ export function SoilChart() {
           color: '#86909C',
           fontFamily: 'DIN, DIN Alternate, sans-serif',
           fontSize: 12,
-          interval: 3,
+          interval: Math.max(1, Math.round(points.length / 6)),
         },
       },
       yAxis: {
         type: 'value',
-        min: 30,
-        max: 55,
+        min: (value: { min: number }) => Math.floor(Math.min(value.min, 38) - 2),
+        max: (value: { max: number }) => Math.ceil(Math.max(value.max, 50) + 2),
         splitLine: { lineStyle: { color: '#E7EEE9' } },
         axisLabel: {
           color: '#86909C',
@@ -54,7 +60,7 @@ export function SoilChart() {
         {
           type: 'line',
           name: '土壤湿度',
-          data: soilDay,
+          data: points,
           smooth: 0.25,
           symbol: 'none',
           lineStyle: { color: '#1F7A45', width: 2.5 },
@@ -90,7 +96,7 @@ export function SoilChart() {
       observer.disconnect()
       chart.dispose()
     }
-  }, [])
+  }, [points])
 
-  return <div ref={host} className="h-[280px] w-full xl:h-full xl:min-h-[280px]" role="img" aria-label="近 24 小时土壤湿度，从 46.8% 降到 38.5%" />
+  return <div ref={host} className="h-[280px] w-full xl:h-full xl:min-h-[280px]" role="img" aria-label="近 24 小时土壤湿度曲线" />
 }

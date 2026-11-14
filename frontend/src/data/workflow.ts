@@ -9,6 +9,9 @@ export type FlowData = {
   input?: string
   expression?: string
   maxIterations?: number
+  /** tool 节点的工具名，后端 dag_json 的 node.tool（缺了引擎会 KeyError） */
+  tool?: string
+  params?: Record<string, unknown>
   remain?: number
   loopOut?: boolean
   status: RunStatus
@@ -31,6 +34,8 @@ type SavedNode = {
   expression?: string
   agentKey?: string
   maxIterations?: number
+  tool?: string
+  params?: Record<string, unknown>
 }
 
 function node(
@@ -96,6 +101,8 @@ export function defaultNodes(): FlowNode[] {
     node('n10', 'tool', { x: left, y: 1060 }, {
       name: '渗透等待',
       input: '浇水结束后等待 90 秒再复测。',
+      tool: 'wait_penetration',
+      params: { seconds: 90 },
       remain: 90,
     }),
     node('n11', 'agent', { x: left, y: 1220 }, {
@@ -141,7 +148,9 @@ export function defaultEdges(): FlowEdge[] {
     link('e11', 'n8', 'n12', { sourceHandle: 'no', label: '不浇' }),
     link('e12', 'n9', 'n10'),
     link('e13', 'n10', 'n11'),
-    link('e14', 'n11', 'n13'),
+    // PRD 9.1 修订：n11 → n11b → n13。n11 只能有一条出边（进 loop 节点），
+    // 否则 dag_json 里 n11.next 到底指谁说不清，loop 节点也会变成孤儿。
+    link('e14', 'n11b', 'n13', { label: '达标' }),
     link('e15', 'n11', 'n11b', { sourceHandle: 'loop', label: '未达标' }),
     link('e16', 'n11b', 'n11', { sourceHandle: 'back', targetHandle: 'again', label: '再验证' }),
     link('e17', 'n12', 'n13'),
@@ -171,6 +180,8 @@ export function loadNodes(): FlowNode[] {
           expression: found.expression ?? item.data.expression,
           agentKey: found.agentKey ?? item.data.agentKey,
           maxIterations: found.maxIterations ?? item.data.maxIterations,
+          tool: found.tool ?? item.data.tool,
+          params: found.params ?? item.data.params,
         },
       }
     })
@@ -184,6 +195,8 @@ export function loadNodes(): FlowNode[] {
               expression: entry.expression,
               agentKey: entry.agentKey,
               maxIterations: entry.maxIterations,
+              tool: entry.tool,
+              params: entry.params,
             }),
           )
       : []
@@ -203,6 +216,8 @@ export function saveLayout(nodes: FlowNode[]) {
     expression: item.data.expression,
     agentKey: item.data.agentKey,
     maxIterations: item.data.maxIterations,
+    tool: item.data.tool,
+    params: item.data.params,
   }))
   localStorage.setItem(LAYOUT_KEY, JSON.stringify(payload))
 }
