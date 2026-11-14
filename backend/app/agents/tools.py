@@ -174,7 +174,13 @@ def build_default_registry(bindings: Optional[dict[str, AgentSpec]] = None) -> T
                       {"type": "object",
                        "properties": {"level": {"type": "string",
                                                 "enum": ["info", "warning", "critical"]},
-                                      "message": {"type": "string"}},
+                                      "message": {"type": "string"},
+                                      "source": {"type": "string",
+                                                 "description": ("报警来源。缺省不用传,平台按当前 Agent "
+                                                                 "自动落 agent:<key>(PRD 6.11)"),
+                                                 "enum": ["scout", "weather", "soil", "pest",
+                                                          "decision", "executor", "verifier",
+                                                          "system"]}},
                        "required": ["level", "message"]},
                       _not_ready("raise_alert", "等待 alerts 表与 WS 推送(队友 B)"))
     registry.register("wait_penetration", "渗透等待定时器(工作流 tool 节点)",
