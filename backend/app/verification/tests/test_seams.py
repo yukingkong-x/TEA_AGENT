@@ -133,7 +133,7 @@ def test_offline_device_marks_confidence_low():
 
     # 离线扣 0.4(数据质量 0.6),速率 1.6%/s 超上限(规则交叉 0.75)→ 0.3+0.225+0.2
     assert result["confidence_detail"]["data_quality"] == 0.6
-    assert result["confidence"] == 0.725
+    assert result["confidence"] == 72.5      # 对外 0-100
     assert result["verdict"] == "success"   # 0.725 仍达标,只是数据质量有扣分
 
 
