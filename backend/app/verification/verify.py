@@ -21,6 +21,8 @@ from app.verification.feedback import Correction, diagnose
 ACHIEVEMENT_PASS = 60.0
 CONFIDENCE_FLOOR = 0.6
 
+NONE_BASELINE_NOTE = "缺执行前基线(payload 与历史复测读数都取不到),达成率无从计算,转人工"
+
 
 @dataclass
 class VerifyResult:
@@ -30,6 +32,9 @@ class VerifyResult:
     correction: Optional[Correction]
     round_no: int
     note: str = ""
+    # 基线缺失:既没 payload baseline 也没有历史前值。此时达成率是「算不出来」,
+    # 不是「0%」;对外一律 needs_human,不拿 0.0 当基线糊出一个漂亮百分比。
+    baseline_missing: bool = False
 
     @property
     def passed(self) -> bool:
@@ -49,7 +54,7 @@ class VerifyResult:
 def verify(
     *,
     samples: list[float],
-    baseline: float,
+    baseline: Optional[float],
     duration_s: float,
     target_low: float = 55.0,
     target_high: float = 65.0,
@@ -60,19 +65,51 @@ def verify(
     history_mean: Optional[float] = None,
     history_sigma: Optional[float] = None,
 ) -> VerifyResult:
-    """一次复测的完整判定。samples 为渗透期后的连续读数,取中位数作为实测值。"""
+    """一次复测的完整判定。samples 为渗透期后的连续读数,取中位数作为实测值。
+
+    baseline 允许为 None:真实 device_cmd 任务的载荷不带基线,接线层只能用
+    「复测前一个点」兜底;连那个点都没有时就是真缺——此时判 needs_human,
+    绝不把 0.0 当基线(否则 (measured−0)/L 会编出 80%+ 的达成率并判 success)。
+    """
+    baseline_missing = baseline is None
+    effective_baseline = 0.0 if baseline_missing else float(baseline)
+
     evidence = Evidence(
         samples=list(samples),
-        baseline=baseline,
+        baseline=effective_baseline,
         duration_s=duration_s,
         device_online=device_online,
         previous_value=previous_value,
         history_mean=history_mean,
         history_sigma=history_sigma,
+        baseline_missing=baseline_missing,
     )
     measured = evidence.measured
-    achievement = compute_achievement(baseline, target_low, target_high, measured)
+    achievement = compute_achievement(effective_baseline, target_low, target_high, measured)
     confidence = compute_confidence(evidence)
+
+    if baseline_missing:
+        # 达成率无从计算:数值留 0 且不参与判定,结论直接转人工并写明原因
+        achievement = Achievement(
+            value=0.0,
+            over_irrigated=False,
+            baseline_in_range=False,
+            gap=round(max(0.0, target_low - measured), 2),
+            baseline=0.0,
+            target_low=target_low,
+            target_high=target_high,
+            measured=measured,
+        )
+        confidence.reasons.append(NONE_BASELINE_NOTE)
+        return VerifyResult(
+            verdict="needs_human",
+            achievement=achievement,
+            confidence=confidence,
+            correction=None,
+            round_no=round_no,
+            note=NONE_BASELINE_NOTE,
+            baseline_missing=True,
+        )
 
     note = ""
     correction: Optional[Correction] = None
@@ -90,7 +127,7 @@ def verify(
     else:
         verdict = "failed"
         correction = diagnose(
-            baseline=baseline,
+            baseline=effective_baseline,
             measured=measured,
             target_low=target_low,
             target_high=target_high,

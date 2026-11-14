@@ -33,12 +33,36 @@ def _raise_not_ready(seam: str, reason: str) -> None:
     raise SeamNotReady(seam, reason)
 
 
+def _num(value: Any, default: Optional[float]) -> Optional[float]:
+    """取数拿不到时退默认值,绝不硬转。
+
+    `float(task.get("baseline", 0.0))` 是错的:键**存在但值是 None** 时 `.get` 返回 None
+    而不是默认值,`float(None)` 直接 TypeError —— 真实 device_cmd 任务的载荷从来不带
+    baseline,接线层(`wiring._load_task`)对取不到的 baseline 就返回 None,于是
+    `POST /api/verify/{task_no}` 必然 500。
+    """
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 @dataclass
 class VerificationDeps:
     """基座注入的取数/落库能力。字段都是回调,本层不关心底下是 MySQL 还是内存。"""
 
     # 任务:{"baseline": 38.5, "duration_s": 30, "target_low": 55, "target_high": 65,
-    #        "round_no": 1, "max_rounds": 2, "device_id": "esp32-soil-02"}
+    #        "round_no": 1, "max_rounds": 2, "device_id": "esp32-soil-02",
+    #        "sensor_id": "esp32-soil-02"}
+    # baseline 取不到时给 None(不要编 0.0);device_id 是**执行终端**,
+    # sensor_id 是**复测读数来源**(role=soil),两者可能不是同一台。
     load_task: Callable[[str], dict]
     # 渗透期后的连续读数(取中位数);设备离线时返回空列表也能判 low confidence
     load_samples: Callable[[str], list[float]]
@@ -46,6 +70,8 @@ class VerificationDeps:
     save_verification: Callable[[str, VerifyResult], Any]
     device_online: Optional[Callable[[str], bool]] = None
     previous_value: Optional[Callable[[str], Optional[float]]] = None
+    # 执行前基线:任务创建时刻之前最后一条读数(时间戳口径,与「什么时候点验证」无关)
+    baseline_before: Optional[Callable[[str], Optional[float]]] = None
     history_stats: Optional[Callable[[str], tuple[Optional[float], Optional[float]]]] = None
     # 转人工时的报警(签名与工具层 raise_alert 一致)
     raise_alert: Optional[Callable[..., Any]] = None
@@ -79,24 +105,37 @@ def verify_task(task_no: str) -> dict:
     deps = _require("verify_task")
     task = deps.load_task(task_no)
     samples = deps.load_samples(task_no)
-    device_id = task.get("device_id", "")
+    # 执行终端(k10-act-03,只有 relay_state/remaining_s)与复测终端(soil_moisture 所在的
+    # 土壤探头)是两台设备。接线层把 sensor_id 一起给过来,没给就退用同一台。
+    sensor_id = task.get("sensor_id") or task.get("device_id") or ""
 
     online = True
-    if deps.device_online is not None and device_id:
-        online = bool(deps.device_online(device_id))
+    if deps.device_online is not None and sensor_id:
+        online = bool(deps.device_online(sensor_id))
     previous = deps.previous_value(task_no) if deps.previous_value else None
+
+    # baseline:payload 里带就用 payload 的;device_cmd 的载荷从来不带它,
+    # 退用「任务创建前最后一条读数」= 执行前基线(与验证时机无关);
+    # 再退用「复测 3 条之前那一条」。三处都没有就是真缺,
+    # 交给 verify 判转人工,绝不用 0.0 编一个达成率出来。
+    baseline: Optional[float] = _num(task.get("baseline"), None)
+    if baseline is None and deps.baseline_before is not None:
+        baseline = deps.baseline_before(task_no)
+    if baseline is None:
+        baseline = previous
+
     mean, sigma = (None, None)
-    if deps.history_stats is not None and device_id:
-        mean, sigma = deps.history_stats(device_id)
+    if deps.history_stats is not None and sensor_id:
+        mean, sigma = deps.history_stats(sensor_id)
 
     result = verify(
         samples=samples,
-        baseline=float(task.get("baseline", 0.0)),
-        duration_s=float(task.get("duration_s", 0.0)),
-        target_low=float(task.get("target_low", 55.0)),
-        target_high=float(task.get("target_high", 65.0)),
-        round_no=int(task.get("round_no", 1)),
-        max_rounds=int(task.get("max_rounds", 2)),
+        baseline=baseline,
+        duration_s=_num(task.get("duration_s"), 0.0) or 0.0,
+        target_low=_num(task.get("target_low"), 55.0) or 55.0,
+        target_high=_num(task.get("target_high"), 65.0) or 65.0,
+        round_no=_int(task.get("round_no"), 1),
+        max_rounds=_int(task.get("max_rounds"), 2),
         device_online=online,
         previous_value=previous,
         history_mean=mean,
@@ -127,7 +166,10 @@ def verify_task(task_no: str) -> dict:
             "reasons": result.confidence.reasons,
         },
         "measured": result.achievement.measured,
-        "baseline": result.achievement.baseline,
+        # 缺基线时对外给 None(而不是 0.0):前端显示「—」,别让 0.0 看起来像个真读数
+        "baseline": None if result.baseline_missing else result.achievement.baseline,
+        "baseline_missing": result.baseline_missing,
+        "sensor_id": sensor_id,
         "round_no": result.round_no,
         "note": result.note,
         "correction": None if result.correction is None else {

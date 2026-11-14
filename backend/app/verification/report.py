@@ -31,7 +31,7 @@ STRATEGY_LABEL = {
 class RoundView:
     """一轮「执行 → 渗透 → 复测 → 判定」的证据。"""
     round_no: int
-    baseline: float
+    baseline: Optional[float]          # 缺基线时为 None(报告里显示「—」,不显示 0.00)
     measured: float
     achievement: float
     confidence: float
@@ -66,6 +66,8 @@ class ReportData:
 
 
 def _fmt(value: float, unit: str = "%") -> str:
+    if value is None:
+        return "—"        # 取不到的数不写成 0.00,报告里一眼看得出「没测到」
     return f"{value:.2f}{unit}" if isinstance(value, (int, float)) else str(value)
 
 

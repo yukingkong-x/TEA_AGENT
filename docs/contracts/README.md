@@ -10,6 +10,7 @@
 
 | 日期 | 改了哪条 | 谁同意的 |
 | ---- | -------- | -------- |
+| 2026-11-14 | 验证结果增 `baseline_missing` / `sensor_id`,`baseline` 可为 `null`:真实 device_cmd 载荷不带基线,按「任务创建前最后一条读数」→「复测 3 条之前一条」→ 留空;**留空时一律 needs_human,达成率不参与判定**(不再出现 0.0 当基线编出 89% 判 success)。复测读数改查 role=soil 设备(同 is_mock 批次、同园区优先),不再查执行终端 | 队长定(改自 B 的 verification_fix.patch) |
 | 2026-11-14 | 新增 `GET /api/tasks/{task_no}/events`(REQ-F-015 轨迹抽屉):`{items:[{id,event,from,to,reason,actor,at,payload}],total}`。`at` **必须是 `isoformat()` 带 `T`**(Safari 不认 `sep=" "`),后端已按 `event+from+to+reason` 去重 | 队长定,A 照此渲染时间轴,B 实现路由 |
 | 2026-11-14 | **画布事件名统一到基座白名单**:WS 只有 `node_state`(`state`=started/finished) 与 `run_status`(`status`=running/success/failed) 两类,引擎内部的 `node_started`/`node_finished`/`run_started`/`run_finished` 由 `engine.WS_TYPE_OF` 单点翻译。原实现发四个内部名,不在 `WS_TYPES` 里,每条事件刷一条「未知 WS 消息类型」告警,且与给 A 的 `node_state`/`run_status` 对不上。**A 按本节的两元组写一个 handler 即可** | 队长定(以 PRD 7.4 白名单为准) |
 | 2026-11-14 | 新增调度事件 `task_status`(WS):`{task_no,run_id,from,to,reason,retry_count,score,assigned_agent,assigned_device}`,另 `result.rejected=breaker_open`。**`tasks.status` 枚举缺 `needs_human`**(PRD 10.2/11.3 要),补之前前端按 `result_json.verdict` 判转人工徽章 | 队长定,B 补枚举 |
