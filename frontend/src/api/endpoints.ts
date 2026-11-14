@@ -12,6 +12,7 @@ import type {
   SensorHistoryDto,
   SensorLatestDto,
   SettingsDto,
+  RunDetailDto,
   TaskDto,
   WorkflowDto,
   WorkflowRunDto,
@@ -94,7 +95,8 @@ export const endpoints = {
 
   runs: (page = 1, pageSize = 20) => api.get<PageDto<WorkflowRunDto>>(apiPath.runs, { page, page_size: pageSize }),
 
-  run: (id: number) => api.get<WorkflowRunDto>(`${apiPath.runs}/${id}`),
+  /** 执行详情：run + tasks + messages（对话剧场的数据源） */
+  run: (id: number) => api.get<RunDetailDto>(`${apiPath.runs}/${id}`),
 
   verifyList: (params: { conclusion?: string; page?: number; page_size?: number } = {}) =>
     api.get<PageDto<Record<string, unknown>>>(apiPath.verify, params),
