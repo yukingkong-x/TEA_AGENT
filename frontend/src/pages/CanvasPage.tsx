@@ -17,18 +17,19 @@ import { useLocation } from 'react-router-dom'
 import { FlowEdge } from '../canvas/FlowEdge'
 import { nodeTypes } from '../canvas/nodes'
 import { Button } from '../components/Button'
+import { ApiError } from '../api/client'
+import { fromDagJson, toDagJson } from '../api/dag'
+import { endpoints } from '../api/endpoints'
+import { dashboardSocket } from '../api/socket'
+import type { NodeStateEventDto, RunStatusEventDto, WorkflowDto } from '../api/types'
 import { agents } from '../data/snapshot'
 import {
-  briefings,
-  clearLayout,
   defaultEdges,
   defaultNodes,
-  loadNodes,
   palette,
-  runScript,
-  saveLayout,
   type FlowData,
   type FlowNode,
+  type RunStatus,
 } from '../data/workflow'
 
 const edgeTypes = { flow: FlowEdge }
@@ -39,174 +40,217 @@ function formatTimer(total: number) {
   return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
 }
 
-function applyStep(nodes: FlowNode[], done: string[], running: string[]) {
+function errText(err: unknown) {
+  if (err instanceof ApiError) return err.notReady ? '模块接入中（SEAM_NOT_READY）' : err.message
+  return err instanceof Error ? err.message : String(err)
+}
+
+/** 节点事件 → 画布状态。按 state 点亮/熄灭，按 status 定红绿（contract 第 7 节）。 */
+function applyNodeEvent(nodes: FlowNode[], event: NodeStateEventDto): FlowNode[] {
   return nodes.map((item) => {
-    let status = item.data.status
-    let speech = item.data.speech
-    let calls = item.data.calls
-    if (done.includes(item.id)) {
-      status = 'done'
-      const brief = briefings[item.id]
-      if (brief) {
-        speech = brief.speech
-        calls = brief.calls
-      }
+    if (item.id !== event.node_id) return item
+    if (event.state === 'started') {
+      return { ...item, data: { ...item.data, status: 'running', speech: undefined, calls: undefined } }
     }
-    if (running.includes(item.id)) {
-      status = 'running'
-      const brief = briefings[item.id]
-      if (brief && item.id === 'n11') {
-        speech = brief.speech
-        calls = brief.calls
-      }
+    const status: RunStatus =
+      event.status === 'failed' ? 'failed' : event.status === 'skipped' ? 'idle' : 'done'
+    return {
+      ...item,
+      data: {
+        ...item.data,
+        status,
+        speech: event.output || item.data.speech,
+        calls: toCalls(event.tool_calls) ?? item.data.calls,
+        remain: undefined,
+      },
     }
-    return { ...item, data: { ...item.data, status, speech, calls } }
+  })
+}
+
+function toCalls(raw: unknown): { name: string; detail: string }[] | undefined {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined
+  return raw.map((entry) => {
+    const call = (entry ?? {}) as { name?: unknown; arguments?: unknown; result?: unknown; status?: unknown }
+    const name = String(call.name ?? 'tool')
+    const denied = call.status === 'denied'
+    const detail = denied
+      ? '⛔ 权限不足（已拦截）'
+      : JSON.stringify(call.arguments ?? call.result ?? {})
+    return { name, detail }
   })
 }
 
 function CanvasEditor() {
   const location = useLocation()
-  const armed = Boolean((location.state as { armed?: boolean } | null)?.armed)
   const { screenToFlowPosition, setCenter, setViewport, zoomTo } = useReactFlow()
-  const [nodes, setNodes, onNodesChange] = useNodesState(loadNodes())
+  const [nodes, setNodes, onNodesChange] = useNodesState(defaultNodes())
   const [edges, setEdges, onEdgesChange] = useEdgesState(defaultEdges())
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [running, setRunning] = useState(false)
+  const [phase, setPhase] = useState<'idle' | 'running' | 'success' | 'failed'>('idle')
   const [round, setRound] = useState(0)
   const [elapsed, setElapsed] = useState(0)
-  const [savedNote, setSavedNote] = useState('改动保存在这台浏览器')
+  const [note, setNote] = useState('正在从后端载入工作流…')
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState<'load' | 'save' | 'run' | null>(null)
+  const [flows, setFlows] = useState<WorkflowDto[]>([])
+  const [wfId, setWfId] = useState<number | null>(null)
+  const [wfName, setWfName] = useState('巡园浇水')
+  const [runId, setRunId] = useState<number | null>(null)
   const [zoom, setZoom] = useState(0.85)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null)
-  const timers = useRef<number[]>([])
-  const started = useRef(false)
+  const visited = useRef<Set<string>>(new Set())
+  const armed = useRef(Boolean((location.state as { arm?: boolean } | null)?.arm))
+  const followed = useRef('')
   const paneRef = useRef<HTMLDivElement>(null)
+  const running = phase === 'running'
 
   const selected = nodes.find((item) => item.id === selectedId) ?? null
 
-  const stopTimers = useCallback(() => {
-    timers.current.forEach((id) => {
-      window.clearTimeout(id)
-      window.clearInterval(id)
-    })
-    timers.current = []
-  }, [])
+  const loadWorkflow = useCallback(
+    async (pickId?: number) => {
+      setBusy('load')
+      try {
+        const list = await endpoints.workflows()
+        if (!list.length) {
+          setNote('后端还没有工作流，先用本地样例')
+          return
+        }
+        const target =
+          list.find((item) => item.id === pickId) ??
+          list.find((item) => item.wf_key === 'patrol_irrigation') ??
+          list[0]
+        const view = fromDagJson(target.dag_json)
+        setFlows(list)
+        setWfId(target.id)
+        setWfName(target.name)
+        setNodes(view.nodes)
+        setEdges(view.edges)
+        setPhase('idle')
+        setRunId(null)
+        setRound(0)
+        setElapsed(0)
+        setNote(`已载入「${target.name}」v${target.version} · ${view.nodes.length} 个节点`)
+        setError(null)
+      } catch (err) {
+        setNote('后端未连通，画布用本地样例')
+        setError(errText(err))
+      } finally {
+        setBusy(null)
+      }
+    },
+    [setEdges, setNodes],
+  )
 
-  const startRun = useCallback(() => {
-    stopTimers()
+  useEffect(() => {
+    void loadWorkflow()
+  }, [loadWorkflow])
+
+  const save = useCallback(async () => {
+    if (!wfId) {
+      setNote('没有后端工作流 id，无法保存')
+      return
+    }
+    const current = flows.find((item) => item.id === wfId)
+    setBusy('save')
+    try {
+      const dag = toDagJson(nodes, edges, { wf_key: current?.wf_key, name: wfName })
+      const updated = await endpoints.updateWorkflow(wfId, { name: wfName, dag_json: dag })
+      setFlows((list) => list.map((item) => (item.id === updated.id ? updated : item)))
+      setNote(`已保存到后端 · v${updated.version}`)
+      setError(null)
+    } catch (err) {
+      setNote(`保存失败：${errText(err)}`)
+      setError(errText(err))
+    } finally {
+      setBusy(null)
+    }
+  }, [edges, flows, nodes, wfId, wfName])
+
+  const startRun = useCallback(async () => {
+    if (!wfId) {
+      setError('还没有载入后端工作流，无法运行')
+      return
+    }
+    setBusy('run')
+    setError(null)
+    visited.current = new Set()
     followed.current = ''
-    setRunning(true)
-    setRound(1)
+    setRound(0)
     setElapsed(0)
+    setPhase('running')
     setNodes((current) =>
       current.map((item) => ({
         ...item,
-        data: {
-          ...item.data,
-          status: 'idle',
-          speech: undefined,
-          calls: undefined,
-          remain: item.id === 'n10' ? 90 : undefined,
-        },
+        data: { ...item.data, status: 'idle', speech: undefined, calls: undefined, remain: undefined },
       })),
     )
-    const clock = window.setInterval(() => setElapsed((value) => value + 1), 1000)
-    timers.current.push(clock)
-    const later = (at: number, fn: () => void) => {
-      const id = window.setTimeout(fn, at)
-      timers.current.push(id)
+    try {
+      const result = await endpoints.runWorkflow(wfId)
+      setRunId(result.run_id)
+      setNote(result.run_id ? `已提交后端执行 · run #${result.run_id}` : '后端已受理，等待事件…')
+    } catch (err) {
+      setPhase('failed')
+      setError(errText(err))
+      setNote(`运行失败：${errText(err)}`)
+    } finally {
+      setBusy(null)
     }
-    runScript.forEach((step) => {
-      later(step.at, () => setNodes((current) => applyStep(current, step.done, step.running)))
-    })
-    const waitTick = window.setInterval(() => {
-      setNodes((current) =>
-        current.map((item) => {
-          if (item.id !== 'n10' || item.data.status !== 'running') return item
-          const remain = Math.max(0, (item.data.remain ?? 90) - 15)
-          return { ...item, data: { ...item.data, remain } }
-        }),
-      )
-    }, 400)
-    timers.current.push(waitTick)
-    const say = (id: string, speech: string) => {
-      setNodes((current) =>
-        current.map((item) => (item.id === id ? { ...item, data: { ...item.data, speech } } : item)),
-      )
-    }
-    later(10000, () => {
-      setNodes((current) => applyStep(current, ['n10'], ['n11']))
-    })
-    later(11600, () => {
-      setNodes((current) =>
-        applyStep(current, ['n11'], ['n11b']).map((item) => {
-          if (item.id === 'n11') return { ...item, data: { ...item.data, status: 'failed' } }
-          if (item.id === 'n11b') {
-            return {
-              ...item,
-              data: {
-                ...item.data,
-                speech: '第 1 轮达成率 39.39%，低于 60%。按缺口补灌 20 秒，进入第 2 轮。',
-              },
-            }
-          }
-          return item
-        }),
-      )
-    })
-    later(13200, () => {
-      setRound(2)
-      setNodes((current) =>
-        applyStep(current, ['n11b'], ['n9']).map((item) =>
-          item.id === 'n10' ? { ...item, data: { ...item.data, remain: 90 } } : item,
-        ),
-      )
-      say('n9', '【执行反馈】补灌任务已下发：k10-act-03 浇水 20 秒。设备状态：在线。')
-    })
-    later(14800, () => {
-      setNodes((current) =>
-        applyStep(current, ['n9'], ['n10']).map((item) =>
-          item.id === 'n10' ? { ...item, data: { ...item.data, remain: 90, status: 'running' } } : item,
-        ),
-      )
-    })
-    later(17200, () => {
-      setNodes((current) => applyStep(current, ['n10'], ['n11']))
-      say(
-        'n11',
-        '【验证报告】第 2 轮：基线 45.0% → 复测 57.0%，目标 [55,65]，达成率 100.00%，置信度 100.00%。结论：闭环成功。',
-      )
-    })
-    later(18800, () => {
-      window.clearInterval(waitTick)
-      window.clearInterval(clock)
-      setRunning(false)
-      setNodes((current) =>
-        applyStep(current, ['n11', 'n13'], []).map((item) =>
-          item.id === 'n11'
-            ? {
-                ...item,
-                data: {
-                  ...item.data,
-                  speech:
-                    '【验证报告】第 2 轮：基线 45.0% → 复测 57.0%，目标 [55,65]，达成率 100.00%，置信度 100.00%。结论：闭环成功。',
-                },
-              }
-            : item,
-        ),
-      )
-    })
-  }, [setNodes, stopTimers])
+  }, [setNodes, wfId])
+
+  // 「开始巡园」确认后跳到本页：等工作流载入完再真正下发，
+  // 这样 WS 订阅已经挂上，前几个节点的事件不会漏。
+  useEffect(() => {
+    if (!armed.current || !wfId || busy !== null) return
+    armed.current = false
+    void startRun()
+  }, [busy, startRun, wfId])
 
   useEffect(() => {
-    if (!armed || started.current) return
-    started.current = true
-    startRun()
-  }, [armed, startRun])
+    if (phase !== 'running') return
+    const timer = window.setInterval(() => setElapsed((value) => value + 1), 1000)
+    return () => window.clearInterval(timer)
+  }, [phase])
 
-  const followed = useRef('')
+  // 画布执行事件：node_state 点亮/熄灭，run_status 收尾（contract 第 7 节）
+  useEffect(() => {
+    const offNode = dashboardSocket.on<NodeStateEventDto>('node_state', (data) => {
+      if (!data?.node_id) return
+      if (runId && data.run_id !== runId) return
+      if (data.state === 'started') {
+        // Self-Loop 会让同一个 node_id 再来一次 —— 按到达顺序播，不去重，只用来数轮次
+        if (visited.current.has(data.node_id)) setRound((value) => Math.max(1, value) + 1)
+        else visited.current.add(data.node_id)
+      }
+      setNodes((current) => applyNodeEvent(current, data))
+    })
+    const offRun = dashboardSocket.on<RunStatusEventDto>('run_status', (data) => {
+      if (!data || typeof data.status !== 'string') return
+      if (runId && data.run_id !== runId) return
+      if (data.status === 'running') {
+        setRunId(data.run_id)
+        setPhase('running')
+        setRound((value) => (value === 0 ? 1 : value))
+        setNote(`执行中 · ${data.node_count ?? '?'} 个节点`)
+        return
+      }
+      setPhase(data.status === 'success' ? 'success' : 'failed')
+      if (typeof data.rounds === 'number' && data.rounds > 0) setRound(data.rounds)
+      const seconds = typeof data.duration_ms === 'number' ? (data.duration_ms / 1000).toFixed(1) : '—'
+      setNote(
+        data.status === 'success'
+          ? `执行完成 · ${seconds}s · ${data.rounds ?? 1} 轮`
+          : `执行失败：${data.error || '未知原因'}`,
+      )
+    })
+    return () => {
+      offNode()
+      offRun()
+    }
+  }, [runId, setNodes])
 
+  // 让执行中的节点自动居中
   useEffect(() => {
     const active = nodes.filter((item) => item.data.status === 'running')
     const key = active.map((item) => item.id).join(',')
@@ -218,25 +262,6 @@ function CanvasEditor() {
     const maxY = Math.max(...active.map((item) => item.position.y)) + 84
     setCenter((minX + maxX) / 2, (minY + maxY) / 2, { zoom: 0.78, duration: 400 })
   }, [nodes, setCenter])
-
-  useEffect(() => () => stopTimers(), [stopTimers])
-
-  useEffect(() => {
-    setEdges((current) => {
-      let changed = false
-      const status = new Map(nodes.map((item) => [item.id, item.data.status]))
-      const next = current.map((edge) => {
-        const source = status.get(edge.source)
-        const target = status.get(edge.target)
-        const passed = source === 'done' || source === 'failed'
-        const active = (passed && target === 'running') || (source === 'running' && target === 'running')
-        if (edge.data?.active === active) return edge
-        changed = true
-        return { ...edge, data: { ...edge.data, active } }
-      })
-      return changed ? next : current
-    })
-  }, [nodes, setEdges])
 
   const onDragStart = (event: DragEvent, type: string, data: Omit<FlowData, 'status'>) => {
     event.dataTransfer.setData('application/zhiqiu-node', JSON.stringify({ type, data }))
@@ -306,10 +331,10 @@ function CanvasEditor() {
 
   const patchSelected = (patch: Partial<FlowData>) => {
     if (!selectedId) return
-    const next = nodes.map((item) => (item.id === selectedId ? { ...item, data: { ...item.data, ...patch } } : item))
-    setNodes(next)
-    saveLayout(next)
-    setSavedNote('配置已写在这个节点上，刷新后还在。')
+    setNodes((current) =>
+      current.map((item) => (item.id === selectedId ? { ...item, data: { ...item.data, ...patch } } : item)),
+    )
+    setNote('节点配置已改，点右上「保存」写回后端。')
   }
 
   const removeNode = (id: string) => {
@@ -317,7 +342,7 @@ function CanvasEditor() {
     setEdges((current) => current.filter((edge) => edge.source !== id && edge.target !== id))
     if (selectedId === id) setSelectedId(null)
     setMenu(null)
-    setSavedNote('已删除这个模块')
+    setNote('已删除这个模块，点「保存」写回后端')
   }
 
   const copyNode = (id: string) => {
@@ -334,7 +359,7 @@ function CanvasEditor() {
     )
     setSelectedId(nextId)
     setMenu(null)
-    setSavedNote('已复制到旁边')
+    setNote('已复制到旁边，点「保存」写回后端')
   }
 
   const shown = palette.filter((item) => {
@@ -393,8 +418,26 @@ function CanvasEditor() {
 
         <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-center justify-between gap-3 px-4 py-3">
           <div className="pointer-events-auto min-w-0">
-            <p className="truncate text-[20px] font-medium leading-[1.3] text-paper">巡园浇水</p>
-            <p className="mt-0.5 truncate text-xs leading-none text-mute">{savedNote}</p>
+            {flows.length > 1 ? (
+              <select
+                aria-label="选择工作流"
+                className="max-w-[240px] truncate rounded-btn border border-line bg-panel px-2 py-1 text-[20px] font-medium leading-[1.3] text-paper"
+                value={wfId ?? ''}
+                disabled={running}
+                onChange={(event) => void loadWorkflow(Number(event.target.value))}
+              >
+                {flows.map((flow) => (
+                  <option key={flow.id} value={flow.id}>
+                    {flow.name}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <p className="truncate text-[20px] font-medium leading-[1.3] text-paper">{wfName}</p>
+            )}
+            <p className={`mt-0.5 truncate text-xs leading-none ${error ? 'text-danger' : 'text-mute'}`} title={note}>
+              {error ?? note}
+            </p>
           </div>
           <div className="pointer-events-auto flex shrink-0 items-center gap-2">
             <span className="num inline-flex h-9 items-center rounded-btn bg-panel px-3 text-xs leading-none text-paper shadow-[0_6px_20px_rgba(23,33,27,0.06)]">
@@ -406,30 +449,22 @@ function CanvasEditor() {
             </span>
             <button
               type="button"
-              className="h-11 rounded-btn bg-panel px-3 text-base text-dim shadow-[0_6px_20px_rgba(23,33,27,0.06)]"
-              onClick={() => {
-                saveLayout(nodes)
-                setSavedNote('已保存在这台浏览器')
-              }}
+              disabled={busy !== null || running}
+              className="h-11 rounded-btn bg-panel px-3 text-base text-dim shadow-[0_6px_20px_rgba(23,33,27,0.06)] disabled:opacity-50"
+              onClick={() => void save()}
             >
-              保存
+              {busy === 'save' ? '保存中…' : '保存'}
             </button>
             <button
               type="button"
-              className="h-11 rounded-btn bg-panel px-3 text-base text-dim shadow-[0_6px_20px_rgba(23,33,27,0.06)]"
+              disabled={busy !== null || running}
+              className="h-11 rounded-btn bg-panel px-3 text-base text-dim shadow-[0_6px_20px_rgba(23,33,27,0.06)] disabled:opacity-50"
               onClick={() => {
-                stopTimers()
-                setRunning(false)
-                clearLayout()
-                setNodes(defaultNodes())
-                setEdges(defaultEdges())
-                setRound(0)
-                setElapsed(0)
+                void loadWorkflow(wfId ?? undefined)
                 setViewport({ x: 120, y: 16, zoom: 0.85 }, { duration: 280 })
-                setSavedNote('已回到默认布局')
               }}
             >
-              恢复默认
+              从后端重载
             </button>
           </div>
         </div>
@@ -493,15 +528,20 @@ function CanvasEditor() {
               type="button"
               className="h-10 rounded-full bg-[#FFECE8] px-4 text-base text-danger"
               onClick={() => {
-                stopTimers()
-                setRunning(false)
+                setPhase('idle')
+                setNote('已停止跟随动画；后端这一轮仍会跑完')
               }}
             >
-              停止
+              停止跟随
             </button>
           ) : (
-            <button type="button" className="h-10 rounded-full bg-tea px-4 text-base text-white hover:bg-teaHover active:bg-teaPress" onClick={startRun}>
-              试运行
+            <button
+              type="button"
+              disabled={busy !== null || !wfId}
+              className="h-10 rounded-full bg-tea px-4 text-base text-white hover:bg-teaHover active:bg-teaPress disabled:opacity-50"
+              onClick={() => void startRun()}
+            >
+              {busy === 'run' ? '下发中…' : '运行'}
             </button>
           )}
         </div>

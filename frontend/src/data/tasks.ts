@@ -41,6 +41,14 @@ export type TaskTrace = {
   reason?: TaskReason
   /** 事件里额外带的信息，如「剩余 12s」 */
   note?: string
+  /**
+   * 事件种类（contract / 队长 11.14）：
+   * - `status` 调度器的 task_status，画实线圆点
+   * - `verify` 验证那一跳（from=任务原状态、to=结论、reason=verdict），单独画虚线
+   */
+  kind?: 'status' | 'verify'
+  /** 谁干的：scheduler / device / verifier / human */
+  actor?: string
 }
 
 export type TaskResult = {

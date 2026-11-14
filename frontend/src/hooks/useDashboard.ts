@@ -82,8 +82,34 @@ function toView(dto: DeviceDto, latest: SensorLatestDto | undefined): Device {
     seriesName: primary.label,
     unit: primary.unit,
     series: [],
+    metric: primary.metric,
+    isMock: dto.is_mock,
     x: spot.x,
     y: spot.y,
+  }
+}
+
+/**
+ * 闭环成功率 / 平均达成率：用 GET /api/verify 最近 20 条记录自己算。
+ * 量纲提醒：achievement / confidence 已是 0-100，别再加权乘 100。
+ * 一条记录都没有时给 0 并把 hint 写成「还没有验证记录」，不要假装 100%。
+ */
+async function verifyStats() {
+  try {
+    const page = await endpoints.verifyList({ page: 1, page_size: 20 })
+    const rows = page.items
+    if (!rows.length) return { rate: 0, achievement: 0, sample: 0, success: 0 }
+    const success = rows.filter((row) => row.conclusion === 'success').length
+    const scored = rows.map((row) => row.achievement).filter((value): value is number => typeof value === 'number')
+    const mean = scored.length ? scored.reduce((sum, value) => sum + value, 0) / scored.length : 0
+    return {
+      rate: Math.round((success / rows.length) * 1000) / 10,
+      achievement: Math.round(mean * 10) / 10,
+      sample: rows.length,
+      success,
+    }
+  } catch {
+    return { rate: 0, achievement: 0, sample: 0, success: 0 }
   }
 }
 
@@ -144,7 +170,8 @@ export function useDashboard(): DashboardData {
         else setSoilSeries([soil.metrics.soil_moisture])
       }
 
-      // 指标卡：在线数 / 今日任务数，其余两个没有聚合接口，前端自己算或退回假数据
+      // 指标卡：在线数 / 任务数来自各自接口；闭环成功率与平均达成率
+      // 用 GET /api/verify 的最近 N 条记录聚合（后端没有专门的统计接口）
       const online = deviceList.filter((device) => device.online).length
       let taskTotal = 0
       try {
@@ -153,14 +180,26 @@ export function useDashboard(): DashboardData {
       } catch {
         /* 任务接口挂了不影响大屏 */
       }
-      const loopMetric = fallbackMetrics.find((item) => item.id === 'loop')?.value ?? 100
-      const rateMetric = fallbackMetrics.find((item) => item.id === 'rate')?.value ?? 100
+
+      const stats = await verifyStats()
 
       setMetrics([
         { id: 'online', label: '在线设备', value: online, suffix: '', hint: `共 ${deviceList.length} 台` },
         { id: 'tasks', label: '今日任务', value: taskTotal, suffix: '', hint: '打开任务中心查看' },
-        { id: 'loop', label: '闭环成功率', value: loopMetric, suffix: '%', hint: '来自最近一次验证' },
-        { id: 'rate', label: '平均达成率', value: rateMetric, suffix: '%', hint: '验证官复测计算' },
+        {
+          id: 'loop',
+          label: '闭环成功率',
+          value: stats.rate,
+          suffix: '%',
+          hint: stats.sample ? `最近 ${stats.sample} 次验证 · 成功 ${stats.success} 次` : '还没有验证记录',
+        },
+        {
+          id: 'rate',
+          label: '平均达成率',
+          value: stats.achievement,
+          suffix: '%',
+          hint: stats.sample ? '验证官复测计算（0-100 量纲）' : '还没有验证记录',
+        },
       ])
 
       rebuild()

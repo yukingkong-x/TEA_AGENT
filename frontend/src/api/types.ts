@@ -123,7 +123,15 @@ export type VerificationDto = {
   /** 0-100，60 为转人工阈值 */
   confidence: number
   measured: number
-  baseline: number
+  /** 可能为 null（没有基线）：显示「—」，不要 ?? 0 */
+  baseline: number | null
+  /**
+   * 基线缺失（contract 第 10 节）：true 时 achievement 是「算不出来」，不是 0%。
+   * 圆环按灰/空态画，别画成绿色的 0%。
+   */
+  baseline_missing?: boolean
+  /** 哪个传感器给的基线，可能为 null */
+  sensor_id?: string | null
   round_no: number
   /** 三路原始分，0-1，权重 0.5 / 0.3 / 0.2 */
   confidence_detail: {
@@ -143,6 +151,118 @@ export type KnowledgeHitDto = {
   score: number
   doc_id: number
   chunk_index: number
+}
+
+/** POST /api/knowledge/search —— 后端包了一层，hits 才是命中数组 */
+export type KnowledgeSearchDto = {
+  question: string
+  top_k: number
+  hits: KnowledgeHitDto[]
+}
+
+/** GET /api/verify —— 验证记录（报告页圆环、指标卡聚合的数据源） */
+export type VerificationRecordDto = {
+  id: number
+  run_id: number | null
+  task_no: string
+  /** 基线，可能为 null */
+  baseline_value: number | null
+  target_low: number | null
+  target_high: number | null
+  measured_value: number | null
+  /** 0-100 */
+  achievement: number | null
+  /** 0-100 */
+  confidence: number | null
+  /** 三路原始分，0-1 */
+  conf_detail: {
+    data_quality?: number
+    rule_cross?: number
+    consistency?: number
+    reasons?: string[]
+  } | null
+  /** success / failed / needs_human */
+  conclusion: string
+  created_at: string | null
+}
+
+/** GET/POST/DELETE /api/devices/mock、/fault、/weather —— 都是同一份模拟器状态 */
+export type MockStateDto = {
+  mode?: RunMode
+  running?: boolean
+  devices?: string[]
+  weather?: 'sunny' | 'cloudy' | 'rainy' | 'frost' | string
+  soil_moisture?: number
+  /** offline 是 {device_id: 剩余秒}，其余是布尔/截止时间 */
+  faults?: {
+    offline?: Record<string, number>
+    ack_timeout_until?: number
+    dry_soil?: boolean
+    stuck_moisture?: boolean
+    sensor_jitter?: boolean
+  }
+}
+
+/** PRD 12.2 五种故障 */
+export type FaultName = 'offline' | 'ack_timeout' | 'dry_soil' | 'stuck_moisture' | 'sensor_jitter'
+
+/**
+ * GET /api/tasks/{task_no}/events —— 轨迹全量回放（队长 11.14 上线）。
+ * 抽屉先拉这个，再用 WS `task_status` 增量 append，按 id 去重。
+ * `at` 带 T，Safari 能解。
+ * `event="verify"` 是验证那一跳：from=任务原状态、to=结论、reason=verdict，payload 里有
+ * verification_id / achievement / confidence / note —— 单独画一条虚线。
+ */
+export type TaskEventDto = {
+  id: number
+  event: 'task_status' | 'verify' | string
+  from: TaskStatusDto | null
+  to: TaskStatusDto | string
+  reason: string | null
+  actor: string | null
+  at: string
+  payload?: Record<string, unknown> | null
+}
+
+/** 画布执行事件（contract 第 7 节）：`run_status` + `node_state` 两类，用 state 区分开始/结束 */
+export type RunStatusEventDto = {
+  run_id: number
+  status: 'running' | 'success' | 'failed'
+  wf_key?: string
+  trigger?: string
+  node_count?: number
+  rounds?: number
+  duration_ms?: number
+  error?: string
+}
+
+export type NodeStateEventDto = {
+  run_id: number
+  node_id: string
+  node_type: string
+  name?: string
+  agent_key?: string
+  /** 只在事件上有：started / finished */
+  state: 'started' | 'finished'
+  /** 只在 finished 上有：running / done / failed / skipped */
+  status?: 'running' | 'done' | 'failed' | 'skipped' | string
+  output?: string
+  error?: string
+  degraded?: boolean
+  duration_ms?: number
+  tool_calls?: unknown
+  tokens_in?: number
+  tokens_out?: number
+}
+
+/** GET /api/knowledge —— 文档列表（后端返回裸数组，不分页） */
+export type KnowledgeDocDto = {
+  id: number
+  title: string
+  source?: string | null
+  status: string
+  chunk_count?: number | null
+  created_at: string | null
 }
 
 /** 统一分页封装（backend/app/api/_common.py） */
