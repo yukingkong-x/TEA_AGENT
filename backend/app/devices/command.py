@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from ..core import ids, task_trail
 from ..core.redis_client import Keys, get_redis
+from ..core.run_context import current_run_id
 from ..core.ws_manager import manager
 from ..models.alerts import Alert
 from ..models.tasks import Task
@@ -122,7 +123,9 @@ def send_cmd(
         task_no = task_no or ids.new_task_no()
         task = Task(
             task_no=task_no,
-            run_id=None,
+            # 执行管家自己建的单也要挂 run：否则这条任务在报告页/run 详情里根本不出现。
+            # 引擎没 set 时 current_run_id() 只在「唯一 running」时才给值，不会乱认。
+            run_id=current_run_id(),
             type="device_cmd",
             payload_json={"device_id": device.device_id, "action": action, "params": params},
             priority=8,
@@ -140,6 +143,11 @@ def send_cmd(
     # 轨迹与状态变更同一个事务：跟着下面那次 commit 一起落地。
     # 新任务的 from 是 None（建出来就是 dispatched，从没落过 pending），
     # 别写假的 pending——轨迹上那一跳不存在，写了会误导排查。
+    #
+    # event 用 `dispatch` 而不是 `task_status`：这一行是「真的发给设备了」的唯一凭据。
+    # assigned_device 在建单时就有了（引擎补建的单也带），所以不能再拿它判断「发没发」；
+    # 执行管家没带 task_no 时的任务认领就靠这个事件区分「调度器标了 dispatched」和
+    # 「确实下发过」（见 core/tool_impl._pending_device_cmd）。
     task_trail.record(
         db,
         task_no=task_no,
@@ -148,6 +156,7 @@ def send_cmd(
         reason="dispatch",
         actor="human" if issued_by.endswith("manual") else "scheduler",
         run_id=task.run_id,
+        event="dispatch",
         payload={"action": action, "params": params, "device_id": device_id, "clamped": clamped},
     )
 

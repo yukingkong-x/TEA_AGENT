@@ -8,7 +8,11 @@
 结果：一张单永远超时重试（task-0005 连续 60s×N 次 timeout），另一张才是真执行的。
 
 `send_device_cmd` 因此改成：给了 task_no 就复用；没给就认领「dispatched 且没有
-assigned_device」的最近一张同动作单（= 建了但没人发的那张）。
+`event="dispatch"` 轨迹」的最近一张同动作单（= 建了但没人发的那张）。
+
+判别依据从 `assigned_device IS NULL` 改成轨迹事件，是因为建单时就已经按
+`payload.device_id` 填了 assigned_device（否则调度器派不出去），原来的判据会把
+「待发」误判成「发过了」，一次浇水又变成两张单（run 19 实测 task-0011/0012）。
 """
 from __future__ import annotations
 
@@ -24,9 +28,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.core import tool_impl  # noqa: E402
 from app.models.base import Base  # noqa: E402
+from app.models.task_events import TaskEvent  # noqa: E402
 from app.models.tasks import Task  # noqa: E402
 
-TABLES = [Task.__table__]
+TABLES = [Task.__table__, TaskEvent.__table__]
 
 
 def _metadata() -> MetaData:
@@ -77,17 +82,27 @@ def _add(maker, task_no, status, device=None, action="pump"):
         db.commit()
 
 
+def _mark_sent(maker, task_no, action="pump"):
+    """补一条真下发凭据：`command.send_cmd` 每次下发都会写 event="dispatch"。"""
+    with maker() as db:
+        db.add(TaskEvent(task_no=task_no, event="dispatch", from_status="pending",
+                         to_status="dispatched", reason="dispatch",
+                         payload_json={"action": action}))
+        db.commit()
+
+
 def test_attaches_to_the_task_nobody_dispatched(db_session):
     maker, captured = db_session
-    _add(maker, "task-0005", "dispatched", device=None)   # 建了单但没下发
+    _add(maker, "task-0005", "dispatched", device="mock-k10-act-03")   # 建了单但没下发
     tool_impl.send_device_cmd("A区", "pump", {"duration_s": 30})
     assert captured["task_no"] == "task-0005"
 
 
 def test_does_not_steal_a_task_that_was_really_sent(db_session):
-    """assigned_device 有值 = 真下发过，不能抢回来重发。"""
+    """有 event="dispatch" 轨迹 = 真下发过，不能抢回来重发（会重复浇水）。"""
     maker, captured = db_session
     _add(maker, "task-0004", "dispatched", device="mock-k10-act-03")
+    _mark_sent(maker, "task-0004")
     tool_impl.send_device_cmd("A区", "pump", {"duration_s": 30})
     assert captured["task_no"] is None
 

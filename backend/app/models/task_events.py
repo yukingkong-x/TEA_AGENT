@@ -13,10 +13,14 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, IdMixin, TimestampMixin
 
-# 取值：task_status / ack / verify / note
+# 取值：task_status / dispatch / ack / verify / note
+# `dispatch` 是「真的发给设备了」的唯一凭据（command.send_cmd 写）。调度器也会把
+# pending 标成 dispatched，但那只是排队状态，没真发；执行管家没带 task_no 时靠这个
+# 事件区分「待发」和「发过了」（见 core/tool_impl._pending_device_cmd），否则一次浇水
+# 会在库里变成两张单。枚举没有收口在校验层，所以新增取值不用改 orchestrator/events.py。
 # 用 String 不用 Enum：Enum 加值要 ALTER 老库，`tasks.status` 上已经踩过一次
 # （见 db._sync_enum_column 的注释）。这张表是纯追加写的流水，不值得再引一次 DDL 风险。
-TASK_EVENT_KINDS = ("task_status", "ack", "verify", "note")
+TASK_EVENT_KINDS = ("task_status", "dispatch", "ack", "verify", "note")
 
 
 class TaskEvent(IdMixin, TimestampMixin, Base):
