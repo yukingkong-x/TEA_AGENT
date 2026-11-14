@@ -73,6 +73,17 @@ def _clamp_params(action: str, params: dict[str, Any] | None) -> tuple[dict[str,
     return params, clamped
 
 
+def _resolve_target(db: Session, device_id: str, roles: set[str]) -> Any:
+    """把「A区」这类指代解析成真实设备；解析不出返回 None（保持原行为，走 ensure_device 登记）。"""
+    from ..core import device_match
+    from ..core.runtime_settings import get_mode
+    from ..models.devices import Device
+
+    role = next(iter(roles)) if len(roles) == 1 else None
+    rows = db.scalars(select(Device)).all()
+    return device_match.match(device_id, rows, role=role, prefer_mock=get_mode() == "mock")
+
+
 def send_cmd(
     db: Session,
     device_id: str,
@@ -90,8 +101,15 @@ def send_cmd(
     if action not in ACTIONS:
         raise ValueError(f"不支持的 action: {action}（全集 {sorted(ACTIONS)}）")
 
-    device = ensure_device(db, device_id)
     allowed_roles = ROLE_ACTIONS.get(action, set())
+    # 下发侧同样要解析指代：决策文本里写的是「A区浇水」，执行管家照着传 device_id="A区"，
+    # 精确匹配落空后 ensure_device 会凭空登记一台 role 猜出来的设备并把指令发到不存在的
+    # 客户端，ack 永远等不到 → 任务超时 → 演示看起来像"指令发了但设备没反应"。
+    hit = _resolve_target(db, device_id, allowed_roles)
+    if hit and hit.device_id != device_id:
+        logger.info("下发设备指代 {!r} 解析为 {}（{}）", device_id, hit.device_id, hit.matched_by)
+        device_id = hit.device_id
+    device = ensure_device(db, device_id)
     if allowed_roles and device.role not in allowed_roles:
         raise ValueError(f"设备 {device_id}（role={device.role}）不支持 action={action}")
 
@@ -106,7 +124,7 @@ def send_cmd(
             task_no=task_no,
             run_id=None,
             type="device_cmd",
-            payload_json={"device_id": device_id, "action": action, "params": params},
+            payload_json={"device_id": device.device_id, "action": action, "params": params},
             priority=8,
             status="dispatched",
             assigned_device=device_id,
