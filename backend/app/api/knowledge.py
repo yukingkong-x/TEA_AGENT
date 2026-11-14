@@ -40,7 +40,7 @@ def _doc_dict(doc: KnowledgeDoc) -> dict[str, Any]:
         "source": doc.source,
         "chunk_count": doc.chunk_count,
         "status": doc.status,
-        "created_at": doc.created_at.isoformat(sep=" ", timespec="seconds") if doc.created_at else None,
+        "created_at": doc.created_at.isoformat(timespec="seconds") if doc.created_at else None,
     }
 
 

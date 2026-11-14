@@ -61,7 +61,7 @@ def to_dict(w: Workflow) -> dict[str, Any]:
         "version": w.version,
         "enabled": w.enabled,
         "dag_json": w.dag_json,
-        "updated_at": w.updated_at.isoformat(sep=" ", timespec="seconds") if w.updated_at else None,
+        "updated_at": w.updated_at.isoformat(timespec="seconds") if w.updated_at else None,
     }
 
 
@@ -72,9 +72,9 @@ def run_to_dict(r: WorkflowRun) -> dict[str, Any]:
         "status": r.status,
         "trigger": r.trigger,
         "context": r.context_json,
-        "started_at": r.started_at.isoformat(sep=" ", timespec="seconds") if r.started_at else None,
-        "finished_at": r.finished_at.isoformat(sep=" ", timespec="seconds") if r.finished_at else None,
-        "created_at": r.created_at.isoformat(sep=" ", timespec="seconds") if r.created_at else None,
+        "started_at": r.started_at.isoformat(timespec="seconds") if r.started_at else None,
+        "finished_at": r.finished_at.isoformat(timespec="seconds") if r.finished_at else None,
+        "created_at": r.created_at.isoformat(timespec="seconds") if r.created_at else None,
     }
 
 
@@ -194,7 +194,7 @@ def get_run(run_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
                 "tokens_in": m.tokens_in,
                 "tokens_out": m.tokens_out,
                 "latency_ms": m.latency_ms,
-                "created_at": m.created_at.isoformat(sep=" ", timespec="seconds") if m.created_at else None,
+                "created_at": m.created_at.isoformat(timespec="seconds") if m.created_at else None,
             }
             for m in messages
         ],

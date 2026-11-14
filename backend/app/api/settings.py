@@ -36,13 +36,11 @@ def update_settings(body: SettingsIn, db: Session = Depends(get_db)) -> dict[str
         raise HTTPException(status_code=400, detail="values 不能为空")
 
     mode_before = runtime_settings.get_mode()
-    new_values = dict(body.values)
 
-    # 传了明文 api key 就加密落库（空串表示不改）
-    if "llm_api_key" in new_values and new_values["llm_api_key"] == "":
-        new_values.pop("llm_api_key")
-
-    runtime_settings.set_many(new_values)
+    # llm_api_key 的三态（null=清空 / ""=不改 / 含 *=掩码跳过）全部由
+    # runtime_settings._secret_action 判定，路由层不插一手：
+    # 以前这里先 pop 掉空串，等于把「不改」策略散成两处，加 null 清空时必然漏一边。
+    runtime_settings.set_many(dict(body.values))
     mode_after = runtime_settings.get_mode()
     if "mode" in body.values and mode_before != mode_after:
         _apply_mode(mode_after)

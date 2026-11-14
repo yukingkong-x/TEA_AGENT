@@ -21,7 +21,7 @@ def to_dict(a: Alert) -> dict[str, Any]:
         "source": a.source,
         "message": a.message,
         "acknowledged": a.acknowledged,
-        "created_at": a.created_at.isoformat(sep=" ", timespec="seconds") if a.created_at else None,
+        "created_at": a.created_at.isoformat(timespec="seconds") if a.created_at else None,
     }
 
 

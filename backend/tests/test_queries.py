@@ -9,7 +9,8 @@ from app.core import queries
 
 
 def _pt(value: float, minutes_ago: float) -> dict:
-    ts = (datetime.now() - timedelta(minutes=minutes_ago)).isoformat(sep=" ", timespec="seconds")
+    # 与接口实际输出一致：带 T 的 ISO 8601（Safari 解析不了空格分隔，见 api_seams 6.7）
+    ts = (datetime.now() - timedelta(minutes=minutes_ago)).isoformat(timespec="seconds")
     return {"value": value, "ts": ts}
 
 

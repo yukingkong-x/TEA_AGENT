@@ -37,7 +37,7 @@ def to_dict(v: Verification) -> dict[str, Any]:
         "confidence": num(v.confidence),
         "conf_detail": v.conf_detail_json,
         "conclusion": v.conclusion,
-        "created_at": v.created_at.isoformat(sep=" ", timespec="seconds") if v.created_at else None,
+        "created_at": v.created_at.isoformat(timespec="seconds") if v.created_at else None,
     }
 
 

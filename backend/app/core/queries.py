@@ -42,7 +42,7 @@ ENV_METRICS = (METRIC_TEMP, METRIC_HUMID, METRIC_LUX, METRIC_CO2)
 
 # ------------------------------------------------------------------ 基础查询
 def _row_dict(row: SensorData) -> dict[str, Any]:
-    return {"value": float(row.value), "ts": row.ts.isoformat(sep=" ", timespec="seconds")}
+    return {"value": float(row.value), "ts": row.ts.isoformat(timespec="seconds")}
 
 
 def recent(

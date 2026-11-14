@@ -17,7 +17,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..core import ids
+from ..core import ids, task_trail
 from ..core.redis_client import Keys, get_redis
 from ..core.ws_manager import manager
 from ..models.alerts import Alert
@@ -97,6 +97,7 @@ def send_cmd(
 
     params, clamped = _clamp_params(action, params)
     task = None
+    prev_status: str | None = None
     if task_no:
         task = db.scalar(select(Task).where(Task.task_no == task_no))
     if task is None:
@@ -114,8 +115,23 @@ def send_cmd(
         )
         db.add(task)
     else:
+        prev_status = task.status
         task.status = "dispatched"
         task.assigned_device = device_id
+
+    # 轨迹与状态变更同一个事务：跟着下面那次 commit 一起落地。
+    # 新任务的 from 是 None（建出来就是 dispatched，从没落过 pending），
+    # 别写假的 pending——轨迹上那一跳不存在，写了会误导排查。
+    task_trail.record(
+        db,
+        task_no=task_no,
+        from_status=prev_status,
+        to_status="dispatched",
+        reason="dispatch",
+        actor="human" if issued_by.endswith("manual") else "scheduler",
+        run_id=task.run_id,
+        payload={"action": action, "params": params, "device_id": device_id, "clamped": clamped},
+    )
 
     # 必须先 commit 再 publish，不能只 flush：
     # 模拟器的 ack 是毫秒级回来的，它在 paho 线程用**另一个 session** 查 Task；
@@ -159,6 +175,10 @@ def send_cmd(
         {
             "task_no": task_no,
             "status": "dispatched",
+            "from": prev_status,
+            "to": "dispatched",
+            "reason": "dispatch",
+            "run_id": task.run_id,
             "type": "device_cmd",
             "assigned_device": device_id,
             "payload": payload,
@@ -190,6 +210,7 @@ def handle_ack(db: Session, payload: dict[str, Any]) -> dict[str, Any]:
     detail = payload.get("detail") or {}
 
     task = db.scalar(select(Task).where(Task.task_no == task_no)) if task_no else None
+    prev_status = task.status if task is not None else None
 
     if stage == "received":
         if task is not None and task.status in {"dispatched", "pending"}:
@@ -216,12 +237,28 @@ def handle_ack(db: Session, payload: dict[str, Any]) -> dict[str, Any]:
         # 也就不会触发 —— 真机慢但一直有回执的任务会被判超时并触发一次假重试。
         task.updated_at = datetime.now()
         db.flush()
+        # 轨迹跟这次 flush 在同一个事务里；重复回执（running→running）由
+        # events.is_duplicate 丢掉，不会刷成几百行。stage=unknown 时 from==to，同样被丢。
+        task_trail.record(
+            db,
+            task_no=task.task_no,
+            from_status=prev_status,
+            to_status=status if status != "unknown" else prev_status,
+            reason="ack",
+            actor="device",
+            run_id=task.run_id,
+            payload={"ack_stage": stage, "result": result, "device_id": device_id, "detail": detail},
+        )
 
     manager.publish_threadsafe(
         "task_status",
         {
             "task_no": task_no,
             "status": status,
+            # 契约第 9 节要求带状态机的边：任务页轨迹直接画 from/to，不要前端自己推
+            "from": prev_status,
+            "to": status,
+            "reason": "ack",
             "type": "device_cmd",
             "assigned_device": device_id,
             "detail": detail,
@@ -278,6 +315,7 @@ def sweep_ack_timeouts(db: Session) -> list[dict[str, Any]]:
 
         task = db.scalar(select(Task).where(Task.task_no == task_no))
         if task is not None and task.status in {"dispatched", "running"}:
+            prev_status = task.status
             task.status = "timeout"
             task.result_json = {"reason": "ack_timeout", "action": action, "deadline": deadline_s}
             db.add(
@@ -288,6 +326,16 @@ def sweep_ack_timeouts(db: Session) -> list[dict[str, Any]]:
                 )
             )
             db.flush()
+            task_trail.record(
+                db,
+                task_no=task_no,
+                from_status=prev_status,
+                to_status="timeout",
+                reason="ack_timeout",
+                actor="scheduler",
+                run_id=task.run_id,
+                payload={"action": action, "device_id": device_id, "overdue_s": int(now - deadline_s)},
+            )
             event = {
                 "task_no": task_no,
                 "device_id": device_id,
@@ -297,7 +345,16 @@ def sweep_ack_timeouts(db: Session) -> list[dict[str, Any]]:
             overdue.append(event)
             manager.publish_threadsafe(
                 "task_status",
-                {"task_no": task_no, "status": "timeout", "type": "device_cmd", "assigned_device": device_id},
+                {
+                    "task_no": task_no,
+                    "status": "timeout",
+                    "from": prev_status,
+                    "to": "timeout",
+                    "reason": "ack_timeout",
+                    "run_id": task.run_id,
+                    "type": "device_cmd",
+                    "assigned_device": device_id,
+                },
             )
             logger.warning("指令超时：task={} device={} action={}", task_no, device_id, action)
             for fn in _timeout_handlers:

@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..db import get_db
+from ..models.task_events import TaskEvent
 from ..models.tasks import Task
 from ._common import page_payload
 
@@ -29,10 +30,10 @@ def to_dict(t: Task) -> dict[str, Any]:
         "assigned_device": t.assigned_device,
         "retry_count": t.retry_count,
         "timeout_s": t.timeout_s,
-        "deadline_at": t.deadline_at.isoformat(sep=" ", timespec="seconds") if t.deadline_at else None,
+        "deadline_at": t.deadline_at.isoformat(timespec="seconds") if t.deadline_at else None,
         "result": t.result_json,
-        "created_at": t.created_at.isoformat(sep=" ", timespec="seconds") if t.created_at else None,
-        "updated_at": t.updated_at.isoformat(sep=" ", timespec="seconds") if t.updated_at else None,
+        "created_at": t.created_at.isoformat(timespec="seconds") if t.created_at else None,
+        "updated_at": t.updated_at.isoformat(timespec="seconds") if t.updated_at else None,
     }
 
 
@@ -74,3 +75,51 @@ def get_task(task_no: str, db: Session = Depends(get_db)) -> dict[str, Any]:
 
     row = db.scalar(select(Task).where(Task.task_no == task_no))
     return to_dict(ensure_found(row, f"任务 {task_no}"))
+
+
+def event_to_dict(e: TaskEvent) -> dict[str, Any]:
+    """轨迹事件 → 契约第 11 节字段。
+
+    `at` 必须 `isoformat()` 带 T：`isoformat(sep=" ")` 产出的
+    `2026-11-14 10:31:02` 在 Safari / iPad 上是 `Invalid Date`，
+    演示机就是 Safari，别改回去。
+    """
+    return {
+        "id": e.id,
+        "event": e.event,
+        "from": e.from_status,
+        "to": e.to_status,
+        "reason": e.reason,
+        "actor": e.actor,
+        "at": e.created_at.isoformat(timespec="seconds") if e.created_at else None,
+        "payload": e.payload_json,
+    }
+
+
+@router.get("/{task_no}/events", summary="任务轨迹事件（轨迹抽屉，按时间正序）")
+def list_task_events(
+    task_no: str,
+    limit: int = Query(100, ge=1, le=500, description="最多返回条数，从最早的事件开始"),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """PRD 986「点任务行展开轨迹抽屉」。
+
+    - **按 `id` 升序**（轨迹从旧到新），不要改成 `created_at` 排序：
+      同一秒内可能连落多行（ack + 状态变更），按时间排会乱序；
+    - `total` 是该任务的事件**总数**，不受 `limit` 影响 —— 前端据此判断是否被截断；
+    - 任务不存在时 404，任务存在但还没事件时返回空数组：
+      这两种情况要分清，否则前端分不出「任务号打错了」和「任务刚建还没跑」。
+    """
+    from ._common import ensure_found
+
+    exists = db.scalar(select(Task.id).where(Task.task_no == task_no))
+    ensure_found(exists, f"任务 {task_no}")
+
+    total = db.scalar(select(func.count(TaskEvent.id)).where(TaskEvent.task_no == task_no)) or 0
+    rows = db.scalars(
+        select(TaskEvent)
+        .where(TaskEvent.task_no == task_no)
+        .order_by(TaskEvent.id.asc())
+        .limit(limit)
+    ).all()
+    return {"items": [event_to_dict(r) for r in rows], "total": total}

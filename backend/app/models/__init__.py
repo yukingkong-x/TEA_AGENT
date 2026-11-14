@@ -12,6 +12,7 @@ from .knowledge_docs import KnowledgeDoc
 from .reports import Report
 from .sensor_data import SensorData
 from .settings import Setting
+from .task_events import TaskEvent
 from .tasks import Task
 from .verifications import Verification
 from .workflow_runs import WorkflowRun
@@ -27,6 +28,7 @@ __all__ = [
     "Workflow",
     "WorkflowRun",
     "Task",
+    "TaskEvent",
     "AgentMessage",
     "Decision",
     "Verification",
