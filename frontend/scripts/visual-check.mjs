@@ -12,7 +12,21 @@ const pages = [
   { path: '/', grep: ['在线设备', '土壤湿度'] },
   { path: '/canvas', grep: ['保存', '运行'] },
   { path: '/tasks', grep: ['任务号'] },
-  { path: '/report', grep: ['基线', '复测'] },
+  { path: '/report', grep: ['基线', '复测', '浇水时长'] },
+  // outcome=unverified 那一档：切到没有验证记录的 run，页面必须显示「未产生验证结果」
+  {
+    path: '/report',
+    name: 'report_unverified',
+    grep: ['未产生验证结果', '不画 0%'],
+    after: `(() => {
+      const el = document.getElementById('report-run');
+      if (!el) return 'no-select';
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
+      setter.call(el, 'run-1003');
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return el.value;
+    })()`,
+  },
   { path: '/chat', grep: [] },
   { path: '/settings', grep: ['运行模式', '故障注入', '知识库', '调度参数', '智能体'] },
 ]
@@ -82,6 +96,11 @@ for (const item of pages) {
   logs.length = 0
   await send('Page.navigate', { url: BASE + item.path })
   await sleep(2600)
+  // 页面内交互（如切 run 下拉）要在滚动与取样之前做
+  if (item.after) {
+    await send('Runtime.evaluate', { expression: item.after, awaitPromise: true })
+    await sleep(900)
+  }
   // 滚到底再回顶，触发懒加载
   await send('Runtime.evaluate', {
     expression: `(async () => {
@@ -109,7 +128,7 @@ for (const item of pages) {
   const missing = item.grep.filter((word) => !data.text.includes(word))
 
   const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true })
-  const file = `${OUT}/${item.path.replace(/\//g, '_') || 'root'}.png`
+  const file = `${OUT}/${(item.name ?? item.path.replace(/\//g, '_')) || 'root'}.png`
   writeFileSync(file, Buffer.from(shot.result.data, 'base64'))
 
   report.push({
