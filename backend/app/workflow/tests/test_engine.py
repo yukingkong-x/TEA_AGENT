@@ -52,6 +52,8 @@ class Harness:
 
     def _tool(self, name: str, params: dict):
         self.tool_calls.append((name, params))
+        if name == "create_task":     # 真实现返回 task_no;引擎补建依赖它
+            return {"task_no": f"task-test-{len(self.tool_calls)}"}
         return {"waited_s": params.get("seconds", 0)}
 
     def run(self, dag=None):
@@ -65,7 +67,11 @@ def test_prd_workflow_runs_end_to_end():
     assert result.status == "success", result.error
     # 7 个 Agent 各跑了一次(verifier 在 Self-Loop 里只跑 1 轮就达标)
     assert harness.calls == {key: 1 for key in AGENT_KEYS}
-    assert harness.tool_calls == [("wait_penetration", {"seconds": 90})]
+    # 决策正文写「浇水30秒」但没真的调 create_task → 引擎补建(见 _ensure_task),
+    # 然后才轮到渗透期等待
+    assert [name for name, _ in harness.tool_calls] == ["create_task", "wait_penetration"]
+    assert harness.tool_calls[0][1]["payload"]["params"]["duration_s"] == 30
+    assert harness.tool_calls[1] == ("wait_penetration", {"seconds": 90})
     # 关键结论被提到顶层,供 condition / loop 表达式引用
     assert result.context["last_decision"] == "irrigate"
     assert result.context["last_verification"] == "success"
@@ -214,7 +220,8 @@ def test_start_run_wires_through_deps():
             {"run_id": run_id, "status": status, "context": context, "error": error}
         ),
         agent_runner_factory=lambda key: FakeRunner(key, calls, REPLIES),
-        tool_invoke=lambda name, params: {"waited_s": 90},
+        tool_invoke=lambda name, params: ({"task_no": "task-42"} if name == "create_task"
+                                          else {"waited_s": 90}),
         emit=None,
     )
     engine_mod.configure(deps)
@@ -225,3 +232,247 @@ def test_start_run_wires_through_deps():
         assert recorded["context"]["last_decision"] == "irrigate"
     finally:
         engine_mod._deps = None  # 复原,避免污染其它用例
+
+
+# ── 2026-11-14 真实 run #9 的两个现场故障 ──────────────────────────────
+
+def test_loop_missing_exit_field_does_not_kill_the_run():
+    """上游这轮没验证 → `last_verification` 空缺。这不该让整条 run failed。
+
+    现场(run #9):执行管家建任务被拒 → 没有任务 → 没有验证 → loop 的退出表达式
+    抛「context 缺少字段 last_verification」→ 整条 run failed、画布停在 Self-Loop。
+    正确语义是「退出条件暂不成立」,由 max_iterations 兜底。
+    """
+    dag = {
+        "wf_key": "loop_gap", "name": "循环缺字段",
+        "nodes": [
+            {"id": "n1", "type": "start", "name": "开始", "next": ["n2"]},
+            {"id": "n2", "type": "loop", "name": "Self-Loop", "max_iterations": 1,
+             "exit_expression": "context.last_verification == 'success'",
+             "body_next": "n3", "next": ["n4"]},
+            {"id": "n3", "type": "tool", "name": "补测", "tool": "wait_penetration", "params": {},
+             "next": []},
+            {"id": "n4", "type": "end", "name": "结束"},
+        ],
+        "edges": [],
+    }
+    harness = Harness()
+    result = harness.run(dag)
+
+    assert result.status == "success"
+    assert result.context["last_verification"] == ""      # 占位而不是缺键
+    assert harness.tool_calls                            # body 确实跑了一轮
+
+
+def test_verdict_is_taken_from_tool_result_not_prose():
+    """verifier 的结论在 verify_result 的返回里,正文常常没写 success 这个词。"""
+    from app.workflow.engine import WorkflowEngine
+
+    class ToolCallRunner:
+        async def run(self, task, upstream=None):
+            return AgentTurn(
+                agent_key="verifier",
+                content="【验证报告】基线 38.5 → 复测 48.9,达成率 63.02%,置信度 92%。",
+                tool_calls=[{"name": "verify_result", "status": "executed",
+                             "result": {"verdict": "success", "achievement": 63.02}}],
+            )
+
+    engine = WorkflowEngine(
+        agent_runner_factory=lambda key: ToolCallRunner(),
+        tool_invoke=lambda name, params: {},
+        emit=None,
+        known_agents=AGENT_KEYS,
+        known_tools=TOOL_NAMES,
+    )
+    dag = {
+        "wf_key": "verdict_from_tool", "name": "结论取工具结果",
+        "nodes": [
+            {"id": "n1", "type": "start", "name": "开始", "next": ["n2"]},
+            {"id": "n2", "type": "agent", "agent_key": "verifier", "name": "验证",
+             "input": "复测", "next": ["n3"]},
+            {"id": "n3", "type": "loop", "name": "Self-Loop", "max_iterations": 1,
+             "exit_expression": "context.last_verification == 'success'",
+             "body_next": "n4", "next": ["n5"]},
+            {"id": "n4", "type": "tool", "name": "补测", "tool": "wait_penetration", "params": {},
+             "next": []},
+            {"id": "n5", "type": "end", "name": "结束"},
+        ],
+        "edges": [],
+    }
+    result = asyncio.run(engine.run(dag, run_id=1, trigger="manual"))
+
+    assert result.context["last_verification"] == "success"
+    assert result.nodes[2].output == "rounds=0"          # 已经达标,不进 body
+
+
+def _decision_dag(agent_key="decision"):
+    return {
+        "wf_key": "ensure_task", "name": "决策落单",
+        "nodes": [
+            {"id": "n1", "type": "start", "name": "开始", "next": ["n2"]},
+            {"id": "n2", "type": "agent", "agent_key": agent_key, "name": "决策",
+             "input": "决定", "next": ["n3"]},
+            {"id": "n3", "type": "end", "name": "结束"},
+        ],
+        "edges": [],
+    }
+
+
+def test_irrigate_without_create_task_is_backfilled_by_engine():
+    """现场(run #13):模型写「本轮决策:irrigate（任务 task-xxx）」但没调用工具。
+
+    任务号是编的,库里一行没有 → 执行管家没单可下。引擎必须按正文时长补建。
+    """
+    class Runner:
+        async def run(self, task, upstream=None):
+            return AgentTurn(
+                agent_key="decision",
+                content="【决策】本轮决策:irrigate（任务 task-xxx）。\n方案:对A区执行浇水45秒，目标湿度55-65%，优先级6。",
+            )
+
+    created: list[dict] = []
+
+    def _tool(name, params):
+        created.append({"name": name, "params": params})
+        return {"task_no": "task-20261114-9001", "status": "pending"}
+
+    engine = WorkflowEngine(
+        agent_runner_factory=lambda key: Runner(),
+        tool_invoke=_tool,
+        emit=None,
+        known_agents=AGENT_KEYS,
+        known_tools=TOOL_NAMES,
+    )
+    result = asyncio.run(engine.run(_decision_dag(), run_id=1, trigger="manual"))
+
+    assert [c["name"] for c in created] == ["create_task"]
+    body = created[0]["params"]["payload"]
+    assert body["params"]["duration_s"] == 45          # 取自正文,不是默认 30
+    assert body["target_range"] == [55, 65]
+    assert result.context["last_task_no"] == "task-20261114-9001"
+    # 留痕:工具调用里能看出这单是引擎补的
+    assert result.nodes[1].tool_calls[-1]["id"] == "engine-create_task"
+
+
+def test_create_task_from_agent_is_not_duplicated():
+    class Runner:
+        async def run(self, task, upstream=None):
+            return AgentTurn(
+                agent_key="decision",
+                content="【决策】本轮决策:irrigate（任务 task-20261114-8888）。方案:浇水30秒。",
+                tool_calls=[{"name": "create_task", "status": "executed",
+                             "result": {"task_no": "task-20261114-8888"}}],
+            )
+
+    created: list[str] = []
+
+    def _tool(name, params):
+        created.append(name)
+        return {"task_no": "should-not-happen"}
+
+    engine = WorkflowEngine(
+        agent_runner_factory=lambda key: Runner(),
+        tool_invoke=_tool,
+        emit=None,
+        known_agents=AGENT_KEYS,
+        known_tools=TOOL_NAMES,
+    )
+    result = asyncio.run(engine.run(_decision_dag(), run_id=1, trigger="manual"))
+
+    assert created == []                                  # Agent 建过就不再补
+    assert result.context["last_task_no"] == "task-20261114-8888"
+
+
+def test_none_decision_creates_no_task():
+    class Runner:
+        async def run(self, task, upstream=None):
+            return AgentTurn(agent_key="decision", content="【决策】本轮决策:none。墒情适宜。")
+
+    created: list[str] = []
+    engine = WorkflowEngine(
+        agent_runner_factory=lambda key: Runner(),
+        tool_invoke=lambda name, params: created.append(name) or {"task_no": "x"},
+        emit=None,
+        known_agents=AGENT_KEYS,
+        known_tools=TOOL_NAMES,
+    )
+    asyncio.run(engine.run(_decision_dag(), run_id=1, trigger="manual"))
+
+    assert created == []
+
+
+def test_executor_sees_task_no_in_upstream():
+    seen: dict[str, str] = {}
+
+    class Runner:
+        async def run(self, task, upstream=None):
+            seen["upstream"] = "\n".join(upstream or [])
+            return AgentTurn(agent_key="executor", content="【执行反馈】已下发。")
+
+    dag = {
+        "wf_key": "taskno_passthrough", "name": "任务号透传",
+        "nodes": [
+            {"id": "n1", "type": "start", "name": "开始", "next": ["n2"]},
+            {"id": "n2", "type": "agent", "agent_key": "executor", "name": "执行",
+             "input": "下发", "next": ["n3"]},
+            {"id": "n3", "type": "end", "name": "结束"},
+        ],
+        "edges": [],
+    }
+    engine = WorkflowEngine(
+        agent_runner_factory=lambda key: Runner(),
+        tool_invoke=lambda name, params: {},
+        emit=None,
+        known_agents=AGENT_KEYS,
+        known_tools=TOOL_NAMES,
+    )
+    asyncio.run(engine.run(dag, run_id=1, trigger="manual", init_context={"last_task_no": "task-77"}))
+
+    assert "task-77" in seen["upstream"]
+
+
+def test_backfilled_task_carries_executor_device():
+    """补建的任务必须自带 device_id,否则落库后 assigned_device 为空、派不出去。"""
+    class Runner:
+        async def run(self, task, upstream=None):
+            return AgentTurn(agent_key="decision", content="【决策】本轮决策:irrigate。方案:浇水20秒。")
+
+    created: list[dict] = []
+    engine = WorkflowEngine(
+        agent_runner_factory=lambda key: Runner(),
+        tool_invoke=lambda name, params: (created.append(params) or {"task_no": "task-1"}),
+        emit=None,
+        known_agents=AGENT_KEYS,
+        known_tools=TOOL_NAMES,
+    )
+    asyncio.run(engine.run(_decision_dag(), run_id=1, trigger="manual",
+                           init_context={"executor_device": "mock-k10-act-03"}))
+
+    assert created[0]["payload"]["device_id"] == "mock-k10-act-03"
+
+
+def test_start_run_passes_context_provider_into_run():
+    from app.workflow import engine as engine_mod
+
+    recorded: dict[str, object] = {}
+    deps = engine_mod.EngineDeps(
+        load_workflow=lambda wf_id: _decision_dag(),
+        create_run=lambda wf_id, trigger: 7,
+        update_run=lambda run_id, status, context, error: recorded.update(status=status, context=context),
+        agent_runner_factory=lambda key: _NoopRunner(),
+        tool_invoke=lambda name, params: {"task_no": "task-7"},
+        emit=None,
+        context_provider=lambda: {"executor_device": "mock-k10-act-03"},
+    )
+    engine_mod.configure(deps)
+    try:
+        engine_mod.start_run(1, "manual")
+    finally:
+        engine_mod._deps = None
+
+    assert recorded["context"]["executor_device"] == "mock-k10-act-03"
+
+
+class _NoopRunner:
+    async def run(self, task, upstream=None):
+        return AgentTurn(agent_key="decision", content="【决策】本轮决策:none。")

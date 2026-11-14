@@ -48,6 +48,10 @@ def _providers() -> list[dict[str, str]]:
     if primary not in {"glm", "deepseek"}:
         logger.warning("未知的 llm_provider={}，按 glm 处理", primary)
 
+    # 模型名也允许设置页覆盖：glm-4-flash 便宜但在「必须真的调用工具」这类
+    # 指令上会跑偏（实测只播报、不落任务），演示前可切到 glm-4-plus 而不用改代码/重启。
+    model_override = str(get_value("llm_model", "") or "").strip()
+
     glm_key = get_secret("llm_api_key") if primary == "glm" else os.getenv("GLM_API_KEY", "")
     deepseek_key = get_secret("llm_api_key") if primary == "deepseek" else os.getenv("DEEPSEEK_API_KEY", "")
 
@@ -55,13 +59,13 @@ def _providers() -> list[dict[str, str]]:
         "name": "glm",
         "base_url": os.getenv("GLM_BASE_URL", GLM_DEFAULT_BASE_URL),
         "api_key": glm_key or "",
-        "model": os.getenv("GLM_MODEL", GLM_DEFAULT_MODEL),
+        "model": model_override or os.getenv("GLM_MODEL", GLM_DEFAULT_MODEL),
     }
     deepseek = {
         "name": "deepseek",
         "base_url": os.getenv("DEEPSEEK_BASE_URL", DEEPSEEK_DEFAULT_BASE_URL),
         "api_key": deepseek_key or "",
-        "model": os.getenv("DEEPSEEK_MODEL", DEEPSEEK_DEFAULT_MODEL),
+        "model": model_override or os.getenv("DEEPSEEK_MODEL", DEEPSEEK_DEFAULT_MODEL),
     }
     return [glm, deepseek] if primary != "deepseek" else [deepseek, glm]
 
@@ -85,6 +89,30 @@ def current_llm() -> Any:
 
 # ─────────────────────────── Agent 工厂 ───────────────────────────
 
+class _RunnerProxy:
+    """在真正跑 Agent 前注入「平台事实」（设备清单）。
+
+    run 与这里在同一个 asyncio 任务里，ContextVar 能传下去；每个节点各 set 一次，
+    所以同一轮 run 里 6 个 Agent 看到的是同一份设备清单。
+    """
+
+    def __init__(self, runner: Any) -> None:
+        self._runner = runner
+
+    def __getattr__(self, item: str) -> Any:      # 其余属性直通(agent_key / spec 等)
+        return getattr(self._runner, item)
+
+    async def run(self, task: str, history: Any = None, upstream: Any = None) -> Any:
+        from app.agents.context import CURRENT_CONTEXT_NOTE, set_context_note
+        from app.agents.roster import device_roster_text
+
+        token = set_context_note(device_roster_text())
+        try:
+            return await self._runner.run(task, history=history, upstream=upstream)
+        finally:
+            CURRENT_CONTEXT_NOTE.reset(token)
+
+
 def _agent_factory(agent_key: str) -> Any:
     """`agent_key` → runner。约定每个 Agent 一个模块，模块内 `build_runner(llm, registry)`。"""
     from app.core.tool_impl import get_registry
@@ -95,7 +123,7 @@ def _agent_factory(agent_key: str) -> Any:
         module = importlib.import_module(f"app.agents.runner_{agent_key}")
     except ModuleNotFoundError as exc:
         raise ValueError(f"未知 agent_key：{agent_key}（没有 app/agents/runner_{agent_key}.py）") from exc
-    return module.build_runner(current_llm(), get_registry())
+    return _RunnerProxy(module.build_runner(current_llm(), get_registry()))
 
 
 def _tool_invoke(name: str, params: dict) -> Any:
@@ -252,6 +280,21 @@ def _persist_agent_message(data: dict) -> None:
 
 # ─────────────────────────── 安装 ───────────────────────────
 
+def _run_context() -> dict:
+    """起跑事实:本轮该把指令发给哪台执行终端、复测读哪台土壤探头。
+
+    引擎补建任务时用 executor_device 填 payload.device_id —— 少了它,任务落库后
+    assigned_device 为空,调度器派不出去,只能躺在队列里超时。
+    """
+    from app.agents.roster import device_ids
+
+    ids = device_ids()
+    return {
+        "executor_device": ids.get("actuator", ""),
+        "sensor_device": ids.get("soil", ""),
+    }
+
+
 def build_deps() -> EngineDeps:
     return EngineDeps(
         load_workflow=_load_workflow,
@@ -260,6 +303,7 @@ def build_deps() -> EngineDeps:
         agent_runner_factory=_agent_factory,
         tool_invoke=_tool_invoke,
         emit=_emit,
+        context_provider=_run_context,
     )
 
 
