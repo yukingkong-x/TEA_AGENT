@@ -76,12 +76,33 @@ def latest(db: Session, device_id: str, metric: str) -> dict[str, Any] | None:
 
 
 def _resolve_device(db: Session, device_id: str | None, role: str) -> Device:
-    """给了 id 就精确找；没给就按角色取第一台（单地块演示场景足够）。"""
+    """给了 id 就先按自然语言解析，解析不出来才报错；没给就按角色取第一台。
+
+    LLM 不会传 `mock-esp32-soil-02`，它传的是「A区茶垄」「A区土壤传感器ID」。
+    精确匹配在这些输入上必然落空，工具抛错后 Agent 会回「设备ID不存在」，
+    决策判 none、闭环断在下发之前 —— 而且很像"数据有问题"，最容易被误判。
+    `device_match` 负责把指代解析成真实 id（含 role 关键词与同批次兜底）。
+    """
+    from . import device_match
+    from .runtime_settings import get_mode
+
+    prefer_mock = get_mode() == "mock"
+    rows = db.scalars(select(Device)).all()
     if device_id:
-        device = db.scalar(select(Device).where(Device.device_id == device_id))
-        if device is None:
-            raise ValueError(f"设备 {device_id} 不存在（先在设备列表里确认 id）")
-        return device
+        hit = device_match.match(device_id, rows, role=role, prefer_mock=prefer_mock)
+        if hit:
+            device = db.scalar(select(Device).where(Device.device_id == hit.device_id))
+            if device is not None:
+                if hit.matched_by != "device_id":
+                    from loguru import logger
+
+                    logger.info(
+                        "设备指代 {!r} 解析为 {}（{}，score={}）",
+                        device_id, device.device_id, hit.matched_by, hit.score,
+                    )
+                return device
+        available = ", ".join(f"{r.device_id}({r.role})" for r in rows) or "（设备表为空）"
+        raise ValueError(f"设备 {device_id} 不存在，可用：{available}")
     device = db.scalar(select(Device).where(Device.role == role).order_by(Device.id))
     if device is None:
         raise ValueError(f"没有 role={role} 的设备（检查种子数据或 Real 模式自动登记）")

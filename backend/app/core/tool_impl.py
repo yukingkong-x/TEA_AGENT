@@ -21,6 +21,7 @@ from datetime import datetime
 from typing import Any
 
 from loguru import logger
+from sqlalchemy import select
 
 from .. import seams
 from ..db import session_scope
@@ -105,10 +106,60 @@ def get_env_status(device_id: str | None = None) -> dict[str, Any]:
         return env_status(db, device_id)
 
 
-def send_device_cmd(device_id: str, action: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-    """唯一指令出口（PRD 7.3 权限铁律：issued_by=agent:executor，白名单已预留）。"""
+def _pending_device_cmd(action: str) -> str | None:
+    """找一张「已经建好但还没真正下发」的同动作 device_cmd 任务，返回它的 task_no。
+
+    为什么需要：决策官建单（tasks 一行 pending）+ 调度器把它标成 dispatched，
+    但**真正下发**只有执行管家调 send_device_cmd 这一条路。而 send_device_cmd 的
+    schema（队长 PRD 7.3）里没有 task_no，执行管家拿不到任务号时只能自己造一张新单——
+    于是库里出现两张单：一张永远超时（实测 task-0005 dispatched → 60s timeout → 重试
+    → 再超时），另一张才是真执行的。轨迹页面上看起来像「下了两条指令，一条石沉大海」。
+
+    只在「唯一候选」时自动认领，多个候选就不猜（返回 None，走原逻辑新建）。
+    """
+    # 刻意不按 created_at 做时间窗过滤：`created_at` 是库端默认值（CURRENT_TIMESTAMP），
+    # 它的时区跟着数据库走，而这里是 Python 的 now()——两者一个 UTC 一个东八区时，
+    # 刚建出来 3 秒的单会被判成「8 小时前」直接筛掉（实测 MySQL 上就是这样静默失效的）。
+    # 状态本身就够判别了：没人下发的单会停在 pending/dispatched，60s 后被调度器转
+    # timeout → retrying，自然离开候选集。
     with session_scope() as db:
-        return command.send_cmd(db, device_id, action, params, issued_by="agent:executor")
+        rows = db.scalars(
+            select(Task)
+            .where(
+                Task.type == "device_cmd",
+                Task.status.in_(("pending", "dispatched")),
+                # 关键判别：真下发过的任务一定带 assigned_device（send_cmd 里写的）。
+                # 调度器却会把 pending 直接标成 dispatched 而不写设备，所以「dispatched
+                # 且 assigned_device 为空」= 建了单但没人真正下发，正是要认领的那一张。
+                Task.assigned_device.is_(None),
+            )
+            .order_by(Task.id.desc())
+            .limit(5)
+        ).all()
+    hits = [row for row in rows if str((row.payload_json or {}).get("action") or "pump") == action]
+    if not hits:
+        return None
+    chosen = hits[0]
+    logger.info("执行管家未带 task_no，认领最近一张未下发的 device_cmd 单 {}", chosen.task_no)
+    return chosen.task_no
+
+
+def send_device_cmd(
+    device_id: str,
+    action: str,
+    params: dict[str, Any] | None = None,
+    task_no: str | None = None,
+) -> dict[str, Any]:
+    """唯一指令出口（PRD 7.3 权限铁律：issued_by=agent:executor，白名单已预留）。
+
+    task_no 给了就复用那一单（回执、轨迹、超时重试全部挂到同一张单上）；
+    没给且平台侧恰好有一张同动作的待执行单，就认领它（见 _pending_device_cmd）。
+    """
+    target = task_no or _pending_device_cmd(action)
+    with session_scope() as db:
+        return command.send_cmd(
+            db, device_id, action, params, issued_by="agent:executor", task_no=target,
+        )
 
 
 def create_task(
