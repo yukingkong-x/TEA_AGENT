@@ -81,19 +81,20 @@ def mqtt_stats() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------- 设备
-@router.get("", summary="设备列表（含在线三态；缺省只返回当前模式那一组）")
+@router.get("", summary="设备列表（含在线三态；缺省返回全量）")
 def list_devices(
     is_mock: str | None = Query(
         None,
-        description="true=只要 Mock / false=只要真机 / all=全量；缺省按当前 mode 过滤",
+        description="true=只要 Mock / false=只要真机 / all=全量（等同缺省）",
     ),
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
+    """缺省不过滤——Mock 与真机可能同时在跑，交给前端按 is_mock 字段分组。"""
     if is_mock is None:
         return registry.list_states(db)
     flag = is_mock.strip().lower()
     if flag == "all":
-        return registry.list_states(db, include_all=True)
+        return registry.list_states(db)
     if flag in {"true", "1", "yes"}:
         return registry.list_states(db, is_mock=True)
     if flag in {"false", "0", "no"}:

@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import threading
+from contextvars import ContextVar
 from datetime import datetime
 from typing import Any
 
@@ -28,6 +29,45 @@ from ..models.tasks import Task
 from .ids import new_task_no
 from .queries import env_status, raise_alert as push_alert, soil_status
 from .runtime_settings import get_value
+
+
+# ─────────────────────────── 报警来源（跨地盘的身份传递）───────────────────────────
+# 为什么用 ContextVar 而不是参数：LLM 的工具 schema 里没有 source（队长 tools.py 只暴露
+# level/message），所以「谁报的警」只能由 runner 在调用工具前隐式放进来。
+# 队长在 base.py 的 _execute_tool 里 set(self.agent_key) / finally reset()，本层负责读。
+# 定义在这里、base.py 反过来 import，是为了让 tool_impl 保持零依赖（谁都能 import 它）：
+# base → tools → tool_impl 这条链本来就存在，不会产生循环导入。
+CURRENT_AGENT_KEY: ContextVar[str | None] = ContextVar("current_agent_key", default=None)
+
+# source 的命名空间本身（不是 key）：LLM 的 enum 里含 "system"，直接透传，
+# 不能再补成 agent:system——那等于把系统报警冒充成 agent 报警。
+_SOURCE_NAMESPACES = {"agent", "system", "user"}
+
+
+def current_agent_key() -> str | None:
+    """当前执行上下文里的 agent_key（scout/decision/executor/verifier...），无则 None。"""
+    return CURRENT_AGENT_KEY.get()
+
+
+def normalize_alert_source(source: str | None) -> str:
+    """把来源统一成 `agent:{key}` / `system:{what}` 形态（PRD 6.11）。
+
+    接受四种写法，都不歧义：
+    - None / 空串       → 读 ContextVar；取不到落 "agent"（LLM 直调时的历史值）
+    - "verifier"        → "agent:verifier"（裸 key 自动补前缀，防调用方写成半截）
+    - "agent:verifier"/"system:safety" → 原样（已带命名空间）
+    - "agent"/"system"  → 原样（命名空间本身，不能再补成 agent:system）
+    """
+    if source is None:
+        key = CURRENT_AGENT_KEY.get()
+        return f"agent:{key}" if key else "agent"
+    text = str(source).strip()
+    if not text:
+        key = CURRENT_AGENT_KEY.get()
+        return f"agent:{key}" if key else "agent"
+    if ":" in text or text in _SOURCE_NAMESPACES:
+        return text
+    return f"agent:{text}"
 
 
 # ─────────────────────────── 工具实现（签名与队长 tools.py 的 OpenAI schema 对齐）───────────────────────────
@@ -86,17 +126,23 @@ def create_task(
         }
 
 
-def raise_alert(level: str, message: str, source: str = "agent") -> dict[str, Any]:
+def raise_alert(level: str, message: str, source: str | None = None) -> dict[str, Any]:
     """写 alerts 表 + WS 推送（level 白名单在 queries.push_alert 里校验）。
 
     source 必须能区分发起方（PRD 6.11）：verifier 那条校验失败报警要落
     `agent:verifier`、安全阀要落 `system:safety`，否则大屏上所有报警都长一个样，
-    演示时没法说明"这条是验证不通过自动报的"。
-    工具 schema 里没有 source 参数（队长 tools.py 只有 level/message），
-    LLM 调用走默认值；runner 直接调用时请显式传自己的身份。
+    演示时没法说明「这条是验证不通过自动报的」。
+
+    source 缺省（None）时读 ContextVar CURRENT_AGENT_KEY——由队长的 AgentRunner
+    在 _execute_tool 里 set(self.agent_key)，所以 LLM 通过工具调用发的报警也能带上
+    真实身份，不需要改工具 schema、也不需要 LLM 自己填。
+    verification/ 这类确定性判定直连调用时显式传 "agent:verifier" 即可（更可靠，
+    不依赖调用栈上下文）。
     """
+    who = normalize_alert_source(source)
+    logger.debug("报警来源：{}（level={}）", who, level)
     with session_scope() as db:
-        return push_alert(db, level, source, message)
+        return push_alert(db, level, who, message)
 
 
 def verify_result(task_no: str) -> dict[str, Any]:

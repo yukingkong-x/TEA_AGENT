@@ -123,22 +123,20 @@ def state_dict(device: Device) -> dict[str, Any]:
     }
 
 
-def list_states(db: Session, is_mock: bool | None = None, include_all: bool = False) -> list[dict[str, Any]]:
+def list_states(db: Session, is_mock: bool | None = None) -> list[dict[str, Any]]:
     """设备列表。
 
-    is_mock=None（缺省）：只返回**当前运行模式**那一组——
-    Mock 演示时大屏不该挂 3 台永远灰着的真设备，Real 模式也不该看到假设备。
+    is_mock=None（缺省）：**不过滤，返回全量**（沿用 PRD 3.1 发布前的旧行为）。
+    曾经缺省按当前 mode 过滤，已回退：演示现场常见 Mock 与真机同时在跑
+    （真板子在烧、模拟器也开着），按 mode 过滤两边都在丢信息；
+    且前端大屏和无感依赖是照「6 台」写死的。
     is_mock=True/False：显式只要 Mock / 只要真机（设置页、联调排查用）。
-    include_all=True：不过滤，给「设备管理」这种需要看到全量的页面。
+
+    契约默认值不能悄悄变——要改必须走 issue + docs/contracts 记录（PRD 3.1）。
     """
     stmt = select(Device).order_by(Device.id)
-    if not include_all:
-        if is_mock is None:
-            from ..core.runtime_settings import get_mode
-
-            stmt = stmt.where(Device.is_mock.is_(get_mode() == "mock"))
-        else:
-            stmt = stmt.where(Device.is_mock.is_(is_mock))
+    if is_mock is not None:
+        stmt = stmt.where(Device.is_mock.is_(is_mock))
     return [state_dict(d) for d in db.scalars(stmt).all()]
 
 
