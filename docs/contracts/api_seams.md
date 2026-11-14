@@ -243,3 +243,12 @@ def _emit(event: dict) -> None:
 另外事件名也对不上契约：引擎发 `node_started/node_finished/run_started/run_finished`，
 而 `docs/contracts/frontend_handoff.md` 给 A 的是 `node_state/run_status/agent_message`。
 两队统一之前，前端这三种事件拿到的是空 `data`，**不要按它做节点高亮**。
+
+### 6.6 `POST /api/workflows/{id}/run` 改 async
+
+队长 `start_run` 靠 `asyncio.get_running_loop().create_task()` 把执行放后台；同步 `def` 路由跑在
+线程池里、没有运行中的事件循环，于是退化成 `asyncio.run()`——**在请求线程里把整条工作流跑完**。
+没有 LLM key 时是 0.1s 的规则降级，看不出来；一旦配了 key，14 个节点要一两分钟，前端点「运行」
+就是个挂死请求（画布也不动）。改成 `async def` + 预检丢 `asyncio.to_thread`，
+实测响应 **0.05s** 返回 `run_id`，执行在后台推进（run 状态随后变 `success`）。
+守它的用例：`test_run_endpoint_stays_async`。

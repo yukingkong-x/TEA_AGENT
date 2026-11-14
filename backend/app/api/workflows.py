@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -13,7 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import seams
-from ..db import get_db
+from ..db import get_db, session_scope
 from ..models.agent_messages import AgentMessage
 from ..models.agents import Agent
 from ..models.tasks import Task
@@ -128,15 +129,27 @@ def delete_workflow(wf_id: int, db: Session = Depends(get_db)) -> dict[str, Any]
     return {"deleted": wf_id}
 
 
-@router.post("/workflows/{wf_id}/run", summary="手动触发执行（调用队长的引擎）")
-def run_workflow(wf_id: int, trigger: str = Query("manual"), db: Session = Depends(get_db)) -> dict[str, Any]:
-    row = db.get(Workflow, wf_id)
-    ensure_found(row, f"工作流 {wf_id}")
-    if not row.enabled:
-        raise HTTPException(status_code=400, detail="该工作流已停用")
+@router.post("/workflows/{wf_id}/run", summary="手动触发执行（调用队长的引擎，立即返回 run_id）")
+async def run_workflow(wf_id: int, trigger: str = Query("manual")) -> dict[str, Any]:
+    """必须是 async def。
 
-    start_run = seams.start_run
-    result = start_run(wf_id, trigger)
+    队长的 `start_run` 靠 `asyncio.get_running_loop().create_task()` 把执行放到后台，
+    拿不到运行中的事件循环就退化成 `asyncio.run()`——**在请求线程里同步跑完整条工作流**。
+    没配 LLM key 时是 0.1 秒的规则降级，看不出问题；一旦配上 key，14 个节点要跑一两分钟，
+    前端点「运行」就是一个挂死的请求（还容易撞网关超时），画布也不会动。
+    所以这里改成 async：预检（两次查库）丢线程池，`start_run` 回到事件循环里调度，接口立即返回。
+    """
+
+    def _precheck() -> None:
+        with session_scope() as db:
+            row = db.get(Workflow, wf_id)
+            ensure_found(row, f"工作流 {wf_id}")
+            if not row.enabled:
+                raise HTTPException(status_code=400, detail="该工作流已停用")
+
+    await asyncio.to_thread(_precheck)
+
+    result = seams.start_run(wf_id, trigger)
     run_id = result.get("run_id") if isinstance(result, dict) else result
     return {"run_id": run_id, "wf_id": wf_id, "trigger": trigger, "raw": result}
 

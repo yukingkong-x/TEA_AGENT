@@ -166,6 +166,20 @@ def test_delete_doc_survives_vector_failure(session, monkeypatch):
     assert session.get(KnowledgeDoc, doc.id) is None
 
 
+# ---------------------------------------------------------------- 触发执行不能阻塞
+def test_run_endpoint_stays_async():
+    """`POST /workflows/{id}/run` 退回同步 def，引擎就会在请求线程里跑完整条工作流。
+
+    没配 LLM key 时是 0.1s 的规则降级，看不出问题；配上 key 后 14 个节点要跑一两分钟，
+    前端点「运行」变成挂死请求。改回 def 这条会立刻红。
+    """
+    import asyncio
+
+    from app.api.workflows import run_workflow
+
+    assert asyncio.iscoroutinefunction(run_workflow)
+
+
 # ---------------------------------------------------------------- 接线降级
 def test_install_degrades_when_module_missing():
     """缺模块只能降级（对应接口 503），绝不能让 app.main 起不来。"""
