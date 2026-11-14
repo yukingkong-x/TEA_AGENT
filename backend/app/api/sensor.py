@@ -67,7 +67,7 @@ def latest(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
                 "is_mock": device.is_mock,
                 "online": device.online,
                 "metrics": metrics,
-                "ts": latest_ts.isoformat(sep=" ", timespec="seconds") if latest_ts else None,
+                "ts": latest_ts.isoformat(timespec="seconds") if latest_ts else None,
             }
         )
     return out
@@ -101,7 +101,7 @@ def history(
     rows = list(reversed(rows))
     points = [
         {
-            "ts": r.ts.isoformat(sep=" ", timespec="seconds"),
+            "ts": r.ts.isoformat(timespec="seconds"),
             "value": float(r.value) if isinstance(r.value, Decimal) else r.value,
         }
         for r in rows
@@ -109,8 +109,8 @@ def history(
     return {
         "device_id": device_id,
         "metric": metric,
-        "from": since.isoformat(sep=" ", timespec="seconds"),
-        "to": until.isoformat(sep=" ", timespec="seconds"),
+        "from": since.isoformat(timespec="seconds"),
+        "to": until.isoformat(timespec="seconds"),
         "count": len(points),
         "points": points,
     }

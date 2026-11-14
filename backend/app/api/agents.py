@@ -51,7 +51,7 @@ def to_dict(a: Agent) -> dict[str, Any]:
         "model": a.model,
         "temperature": float(a.temperature) if isinstance(a.temperature, Decimal) else a.temperature,
         "enabled": a.enabled,
-        "updated_at": a.updated_at.isoformat(sep=" ", timespec="seconds") if a.updated_at else None,
+        "updated_at": a.updated_at.isoformat(timespec="seconds") if a.updated_at else None,
     }
 
 

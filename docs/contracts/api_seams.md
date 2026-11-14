@@ -171,6 +171,11 @@ WS 消息统一：`{"type": "...", "data": {...}, "ts": 1730700000}`，type ∈
 | 2026-11-14 晚 | 指令→回执→终态 | `pump 30s` 下发后 `dispatched→running→success`，`result_json` 落 `executed_s=30.0`、`moisture_gain=10.5` |
 | 2026-11-14 晚 | 触发执行 `POST /api/workflows/3/run` | 返回 `run_id`，run 状态 `success`，context 里 6 个 agent 输出齐全（无 key 走规则降级） |
 | 2026-11-14 晚 | 掩码回传保护（实测） | 写入真 key → PUT 回 `sk-r****1234` → 库里明文仍是原 key |
+| 2026-11-14 深夜 | `task_events` 建表（老库自动补） | MySQL `desc task_events` 10 列齐全，`run_id` = `bigint`、`id` = `bigint auto_increment` |
+| 2026-11-14 深夜 | 指令→回执→轨迹端到端 | `pump 6s` → 轨迹 3 行：`null→dispatched(dispatch,human)` → `dispatched→running(ack,device)` → `running→success(ack,device)`，`at` 均为 `2026-11-14T11:17:0x` |
+| 2026-11-14 深夜 | `GET /api/tasks/{task_no}/events` | `{items:[...], total:3}`，`id` 升序、`from/to` 可直画；任务号打错 → 404 |
+| 2026-11-14 深夜 | 密钥三态（实测三连） | 写入 → `sk-t****7890`；PUT 空串 → 值不变、日志「跳过敏感配置」；PUT `null` → 清空 + WARNING「敏感配置已被清空」 |
+| 2026-11-14 深夜 | 全量测试（容器 Python 3.11.18 / 宿主 3.13） | **84 passed**，两条环境同结果；新增 `tests/test_task_events.py` 11 例 |
 
 
 ## 六、六接缝接线后的基座侧改动（2026-11-14 晚）
@@ -219,32 +224,7 @@ health 里 `not_ready`，还能从日志里看到原因。三个 install/start �
 真机慢但一直在回执的任务会被误判超时。已用用例 `test_ack_refreshes_updated_at_even_when_status_unchanged`
 钉住（去掉这行赋值立刻红）。
 
-### 6.5 已知问题（队长侧，未修，会影响队友 A 的对话剧场）
-
-**引擎事件是扁平结构，`workflow/wiring.py::_emit` 按 `{"type","data"}` 取，导致 `data` 恒为空。**
-
-```
-engine.py: self._fire({"type": "node_finished", "run_id", "node_id", "agent_key", "output", ...})   # 扁平
-wiring.py: data = event.get("data") or {}        # 取不到 → {}
-           if msg_type == "node_finished" and data.get("agent_key"):  # 永远不成立
-```
-
-实测：跑一次默认工作流，引擎发出 22 个事件，`agent_messages` 表 **0 行**，
-WS 收到的 `node_started/node_finished` 载荷全是 `{}`。`_persist_agent_message` 本身可用
-（直接调用能落库），只是永远调不到。修法二选一：
-
-```python
-# 方案 A（改 wiring，3 行，推荐）
-def _emit(event: dict) -> None:
-    data = event.get("data") or {k: v for k, v in event.items() if k != "type"}
-# 方案 B（改 engine）：_fire 里统一包一层 {"type": t, "data": {...}}
-```
-
-另外事件名也对不上契约：引擎发 `node_started/node_finished/run_started/run_finished`，
-而 `docs/contracts/frontend_handoff.md` 给 A 的是 `node_state/run_status/agent_message`。
-两队统一之前，前端这三种事件拿到的是空 `data`，**不要按它做节点高亮**。
-
-### 6.6 `POST /api/workflows/{id}/run` 改 async
+### 6.5 `POST /api/workflows/{id}/run` 改 async
 
 队长 `start_run` 靠 `asyncio.get_running_loop().create_task()` 把执行放后台；同步 `def` 路由跑在
 线程池里、没有运行中的事件循环，于是退化成 `asyncio.run()`——**在请求线程里把整条工作流跑完**。
@@ -252,3 +232,55 @@ def _emit(event: dict) -> None:
 就是个挂死请求（画布也不动）。改成 `async def` + 预检丢 `asyncio.to_thread`，
 实测响应 **0.05s** 返回 `run_id`，执行在后台推进（run 状态随后变 `success`）。
 守它的用例：`test_run_endpoint_stays_async`。
+
+---
+
+## 七、任务轨迹（REQ-F-015）与两个契约口径（2026-11-14 深夜）
+
+### 7.1 `task_events` 表 + `GET /api/tasks/{task_no}/events`
+
+表按队长给的 model 原样落 `models/task_events.py`（`run_id` **BigInteger**，与 `tasks.run_id` 一致；
+`event` 用 String 不用 Enum——Enum 加值要 ALTER 老库，`tasks.status` 上已经踩过一次）。
+`create_all` 只负责建**缺的表**，所以老库启动时这张表会被自动补上（实测 MySQL 里 10 列齐全）。
+
+接口：`?limit=100`（1~500），**按 `id` 升序**，`at` 用 `isoformat(timespec="seconds")`；
+`total` 是该任务事件**总数**、不受 limit 影响；任务不存在 404，存在但没事件返回空数组。
+为什么不按 `created_at` 排序：ack 与状态变更常常落在同一秒，按时间排会乱序。
+
+### 7.2 设备指令链自己落轨迹（**补一个覆盖缺口**）
+
+队长 `orchestrator/wiring._emit` 只在**调度器**改状态时记轨迹。而 `devices/command.py`
+是另一条独立链路：它自己把 `pending→dispatched→running→success` 改完、自己广播
+`task_status`，从不经过调度器。实测后果：`POST /api/devices/{id}/cmd` 跑完一次浇水，
+任务状态正常但轨迹 **0 行**——而「设置页点一下浇水 → 任务列表点开看轨迹」是演示里被点最多的路径。
+
+补法：新增 `app/core/task_trail.py::record(db, ...)`，在 `send_cmd` / `handle_ack` /
+`sweep_ack_timeouts` 三处跟着**同一个事务**写一行。三条约束：
+
+- 拼装与去重**复用** `orchestrator.events.build / is_duplicate`（口径与调度器侧完全一致，
+  不另写一套），模块缺失时静默降级、只警告一次；
+- 用 `db.begin_nested()`（SAVEPOINT）包住插入：轨迹写失败只丢这一行，
+  调用方「改状态」的事务照常提交——轨迹是加分项，不能让浇水指令跟着失败；
+- 重复回执（`running→running`）由 `is_duplicate` 丢掉，不会刷成几百行。
+
+顺带把 `task_status` 的 WS 载荷补上 `from` / `to` / `reason`：契约第 9 节要求
+「任务页轨迹直接画 from/to，不要前端自己推」，之前只发了 `status`。
+
+### 7.3 全站时间改成带 `T` 的 ISO
+
+19 处 `isoformat(sep=" ", timespec="seconds")` → `isoformat(timespec="seconds")`，
+REST 现在统一 `2026-11-14T11:17:01`（Safari 可解析）。有一条测试扫全部 `app/**/*.py` 兜底，
+防止改一次忘一处。**WS 信封的 `ts` 与 `telemetry.ts` 仍是数字 epoch 秒**，两套量纲不要混。
+
+### 7.4 `llm_api_key` 三态：`null` 清空 / `""` 不改 / 含 `*` 跳过
+
+`_secret_write_guard` 升级成 `_secret_action`（`write` / `clear` / `skip`），
+路由层原来「空串就 pop」的特判删掉，策略只留一处。`null` 落空串（不加密空串），
+`GET /api/settings` 于是显示空输入框；清空时打一条 WARNING（「LLM 将走规则降级」），
+否则「Key 什么时候没的」永远查不到。实测三态见下方验证记录。
+
+### 7.5 已修问题不再列在这里
+
+`workflow/wiring._emit` 取扁平载荷、事件名不在 `WS_TYPES` 白名单这两条已由队长 `9553948` 修掉
+（`engine.WS_TYPE_OF` 单点翻译 + 守卫测试），原先记在 6.5 的整段已删——**已修的坑留在文档里
+比不写更危险**，下一个人会照着旧结论排查。

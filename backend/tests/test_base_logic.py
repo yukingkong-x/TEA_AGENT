@@ -14,7 +14,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.api._dag import validate_dag  # noqa: E402
-from app.core.runtime_settings import _secret_write_guard  # noqa: E402
+from app.core.runtime_settings import _secret_action  # noqa: E402
 from app.devices.command import MAX_PUMP_DURATION_S, _clamp_params  # noqa: E402
 from app.mock.simulator import SoilModel  # noqa: E402
 
@@ -139,33 +139,37 @@ def test_dag_orphan_non_loop_still_rejected():
     assert any("没有任何节点指向它" in e for e in errors), errors
 
 
-# ---------------------------------------------------------------- 敏感配置写入闸门
+# ---------------------------------------------------------------- 敏感配置三态写入
 def test_secret_guard_blocks_masked_value():
     """GET /api/settings 返回 sk-a****wxyz，前端原样 PUT 回来必须拦住。"""
-    assert _secret_write_guard("llm_api_key", "sk-a****wxyz") is True
+    assert _secret_action("llm_api_key", "sk-a****wxyz") == "skip"
 
 
 def test_secret_guard_blocks_already_encrypted():
     """密文回传会二次加密，照样是灾难。"""
-    assert _secret_write_guard("llm_api_key", "enc:gAAAAABfake") is True
+    assert _secret_action("llm_api_key", "enc:gAAAAABfake") == "skip"
 
 
-def test_secret_guard_blocks_empty():
-    """空值 = 不改，不能把已存的 key 抹成空。"""
-    assert _secret_write_guard("llm_api_key", "") is True
-    assert _secret_write_guard("llm_api_key", "   ") is True
-    assert _secret_write_guard("llm_api_key", None) is True
+def test_secret_guard_skips_empty_string():
+    """空串 = 没填，不能把已存的 key 抹成空（设置页整表 PUT 时每个没填的字段都是空串）。"""
+    assert _secret_action("llm_api_key", "") == "skip"
+    assert _secret_action("llm_api_key", "   ") == "skip"
+
+
+def test_secret_none_clears():
+    """`null` 才是「显式清空」——与空串必须分开，否则改个阈值顺手删掉 LLM Key。"""
+    assert _secret_action("llm_api_key", None) == "clear"
 
 
 def test_secret_guard_allows_plaintext():
-    assert _secret_write_guard("llm_api_key", "sk-abcdef123456") is False
+    assert _secret_action("llm_api_key", "sk-abcdef123456") == "write"
 
 
 def test_secret_guard_ignores_normal_keys():
-    """非敏感字段不受影响：空串也照常落库。"""
-    assert _secret_write_guard("mode", "real") is False
-    assert _secret_write_guard("mode", "") is False
-    assert _secret_write_guard("weather_scenario", "rainy") is False
+    """非敏感字段不受影响：空串照常落库，null 也不是清空语义。"""
+    assert _secret_action("mode", "real") == "write"
+    assert _secret_action("mode", "") == "write"
+    assert _secret_action("weather_scenario", "rainy") == "write"
 
 
 # ---------------------------------------------------------------- 指令参数

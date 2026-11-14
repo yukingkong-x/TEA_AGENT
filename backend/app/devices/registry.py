@@ -118,7 +118,7 @@ def state_dict(device: Device) -> dict[str, Any]:
         "location": device.location,
         "is_mock": device.is_mock,
         "online": device.online,
-        "last_seen": device.last_seen.isoformat(sep=" ", timespec="seconds") if device.last_seen else None,
+        "last_seen": device.last_seen.isoformat(timespec="seconds") if device.last_seen else None,
         "state": online_state(device.device_id),
     }
 

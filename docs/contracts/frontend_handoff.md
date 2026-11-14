@@ -1,6 +1,9 @@
 # 给队友 A 的前后端对接清单
 
-> 2026-11-14 · 后端 `feature/backend-base`（`9891eac`）实测口径 · 写给前端 `feature/frontend-dashboard`
+> 2026-11-14 · 后端 `feature/backend-base`（`feature/backend-base` @ `4955298` + 轨迹接口）实测口径 · 写给前端 `feature/frontend-dashboard`
+>
+> **2026-11-14 深夜更新（第二轮）**：画布三种 WS 事件已通、时间统一带 `T`、任务轨迹有了真接口、
+> `llm_api_key` 支持 `null` 清空。1.3 / 2.4 / 4 / 5 四节已按新状态重写，旧结论别再照抄。
 >
 > 下面每条结论都来自后端代码/实测，不是推测。带「复现」的可以直接验。
 
@@ -8,15 +11,21 @@
 
 后端 34 条 `/api` 路由 + 1 条 WS 全部就绪，字段、枚举、分页格式已冻结。
 
-前端目前（`origin/feature/frontend-dashboard` @ `1932c71`）：**只有一条 WS 连接，REST 一条都没接**，
-`src/data/*.ts` 仍是写死快照。所以「接不上」不是缺接口，是缺一层 **API client + 类型映射**。
+前端（`origin/feature/frontend-dashboard` @ `ed64a88`）已经接上 REST + WS：
+`src/api/socket.ts` 把 1.1 的三处坑全修了（URL 兜底 / `onmessage` / 20s ping，还补了指数退避重连），
+`src/lib/` 也进了版本库（1.2 已解决），`src/lib/parseTs.ts` 也有了。
 
-另外你已经接上的那条 WS 有 4 个问题（见 1.1），**现在实际上一条消息都收不到**——
-不是后端没发，是前端没处理。建议先修它，后面所有实时效果都挂在这条线上。
+**所以下面第 1 节保留原始分析、但三条都已修**（复查过远端代码，不是听说）。
+仍在生效的是第 2 节的类型对齐与第 7 节的落地顺序。
 
 ---
 
-## 1. 三条必须先修的（会直接崩 / 功能静默失效）
+## 1. 三条曾经的崩溃点（**均已修，保留分析防复发**）
+
+> 2026-11-14 复查 `origin/feature/frontend-dashboard` @ `ed64a88`：
+> 1.1 ✅ `src/api/socket.ts` 三处全改 + 重连；1.2 ✅ `useCountUp.ts` 已入库、`.gitignore` 已去 `lib/`；
+> 1.3 ✅ 后端 19 处时间序列化改成带 `T` 的 ISO。
+> 下面原文保留，是为了记住「为什么会炸」，不是待办。
 
 ### 1.1 WS 接了但没通：`VITE_WS_URL` 无兜底、无 `onmessage`、无心跳
 
@@ -101,36 +110,22 @@ git add -f frontend/src/lib/useCountUp.ts
 
 改完用 `git ls-files frontend/src/lib` 确认有输出。
 
-### 1.3 时间字符串在 Safari / iPad 上是 `Invalid Date`
+### 1.3 时间字符串：后端已统一成带 `T` 的 ISO，前端那层兜底可以留但不再是必需
 
-后端所有时间字段格式统一为 `"2026-11-14 09:30:00"`（**空格分隔**，由
-`isoformat(sep=" ")` 生成）。这是 MySQL 原生格式，Chrome 容忍，但 **Safari 的
-`new Date("2026-11-14 09:30:00")` 直接返回 `Invalid Date`**。
+**2026-11-14 晚已改完**：全站 19 处 `isoformat(sep=" ")` 换成 `isoformat(timespec="seconds")`，
+后端现在输出 `"2026-11-14T09:30:00"`（带 `T`、秒级、无时区后缀），Safari / iPad 能直接解析。
+`at`（轨迹）、`ts`（传感器）等字段全部同格式。
 
-**这个坑现在被 mock 数据掩盖了**：你 `src/data/tasks.ts` 里写的是
-`'2026-11-11T08:14:22+08:00'`（带 `T`，Safari 能解析），但 `formatClock(iso)` 和
-`TasksPage.tsx` 的 `inRange(iso)` 都是裸 `new Date(iso)`——**换成后端真实格式的那一刻就全部炸**。
+对前端的影响：
 
-涉及字段：`sensor/latest.ts`、`sensor/history.points[].ts`、`tasks[].created_at /
-updated_at / deadline_at`、`alerts[].created_at`、`runs[].started_at / finished_at`、
-`agents[].updated_at`。
+- `new Date(iso)` 现在**是对的**，包括 Safari；
+- 你之前按上一条建议写的 `parseTs()` 可以留着（等价于恒等），但**别再依赖"后端是空格格式"这个假设**；
+- 仍要注意：**WS 里的 `ts` 是数字 epoch 秒**（`telemetry` 的 `ts`、信封 `ts`），不是字符串，
+  别丢给 `new Date()`——要 `new Date(ts * 1000)`。这是两套量纲，最容易混。
 
-演示如果投 iPad 或 Safari，大屏时间栏全是 `Invalid Date`。**前端加一层解析**就行：
-
-```ts
-// src/lib/time.ts
-/** 后端统一 "YYYY-MM-DD HH:mm:ss"；Safari 不认空格分隔，必须换成 T。 */
-export function parseTs(s: string | null | undefined): Date | null {
-  if (!s) return null
-  return new Date(s.includes('T') ? s : s.replace(' ', 'T'))
-}
-```
-
-`formatClock` / `inRange` 里的裸 `new Date(iso)` 全部换成 `parseTs(iso)`。
-**不要用 `dayjs(s)` 直接吃原串**——它内部也是 `new Date`，Safari 一样挂。
-
-> 为什么不让后端改成 ISO+T：这是全站 19 处序列化 + 已冻结的契约，改动会同时波及你已写的
-> 代码和队长的联调基线。演示前一周改契约风险大于前端加一个 3 行函数。等提交后可以统一。
+> 历史：改之前是 MySQL 原生的空格格式，Safari 上 `new Date("2026-11-14 09:30:00")` 直接
+> `Invalid Date`；而 mock 数据写的是带 `T` 的串，把坑盖住了。队长要求时间统一带 `T` 之后
+> 一次性改完，无需前端转换。
 
 ---
 
@@ -198,17 +193,21 @@ const byRole = (list: DeviceDto[], role: string) => list.find((d) => d.role === 
 
 `needs_human` 那条分支是死的（PRD 里没有这个状态流转）。其余 9 个都对得上。
 
-### 2.4 任务轨迹 `trace` 没有后端数据源
+### 2.4 任务轨迹：`task_events` 表已建，改用接口取，别再用本地累积
 
-前端 `TaskRow.trace: {status, at}[]`。后端**没有 `task_events` 表**（14 张表里没有），
-任务只存当前 `status`，不存状态变迁历史。
+前端 `TaskRow.trace` 原来是本地攒的（订阅 WS `task_status` 塞 Map），刷新即丢。
+现在后端有真表了：**`GET /api/tasks/{task_no}/events?limit=100`**，
+`{ items: [{ id, event, from, to, reason, actor, at, payload }], total }`，
+按 `id` 升序（旧→新）直接画。
 
-两个选择，建议第 1 个：
+- `total` 是该任务事件**总数**，`items` 最多 `limit` 条；`total > items.length` 说明被截断；
+- 任务不存在返回 404，任务存在但还没事件返回空数组——两种情况要分开处理，
+  否则「任务号打错」会表现成「任务刚建、一直没有轨迹」；
+- 轨迹**已经去重**（调度器每 tick 发同一条 `retry_hold_offline` 的情况被折叠），
+  看到重复相邻行就是后端 bug，报给我；
+- 最后一行不一定是终态，任务当前状态读 `task.status`。
 
-1. **前端本地累积**：订阅 WS `task_status`，把同一个 `task_no` 的事件攒进内存 Map。
-   刷新后只剩当前状态——演示时别刷新就行。
-2. 我加一张 `task_events` 表（约半天，要在 11.15 提交线之前挤进去，且会改 14 张表的
-   既定契约）。除非评委明确要求"轨迹可回溯"，否则不值得。
+字段全集与理由见 `docs/contracts/agent-data-contract.md` 第 11 节。
 
 ---
 
@@ -305,6 +304,7 @@ Base URL：`http://localhost:8000`（**不需要 vite proxy**，后端 CORS 已�
 | `GET /api/alerts?level=&acknowledged=&page=&page_size=` | 分页，item = `{id, level, source, message, acknowledged, created_at}` |
 | `POST /api/alerts/{id}/ack` | 认领一条报警，返回同结构 |
 | `GET /api/tasks?status=&type=&run_id=&assigned_device=&page=` | 分页，item = `{id, task_no, run_id, type, payload, priority, score, status, assigned_agent, assigned_device, retry_count, timeout_s, deadline_at, result, created_at, updated_at}` |
+| `GET /api/tasks/{task_no}/events?limit=100` | 轨迹抽屉：`{ items: [{ id, event, from, to, reason, actor, at, payload }], total }`，按 `id` 升序；`total` 是总数（不受 limit 影响）；任务不存在 404 |
 | `GET /api/workflows` / `GET /api/workflows/{id}` | `{ id, wf_key, name, version, enabled, dag_json, updated_at }` |
 | `GET /api/agents` | `[{ id, agent_key, name, avatar, system_prompt, tools_json[], model, temperature, enabled, updated_at }]` |
 | `GET /api/settings` | `{ mode, llm_ready, items: [{ key, value, description }] }`——**`items` 是数组不是对象** |
@@ -325,12 +325,23 @@ const dirty = Object.fromEntries(
 if (Object.keys(dirty).length) await api.put('/settings', { values: dirty })
 ```
 
-**`GET /api/health` 的 `ts` 是带 `T` 的 ISO 格式**，而其他接口是空格分隔——两处不一致，
-用 1.2 的 `parseTs()` 兼容两种情况（函数里已经判了 `includes('T')`）。
+**`llm_api_key` 的三态**（设置页「清除 Key」按钮要用到）：
+
+| 发什么 | 后端行为 | 用在哪 |
+| --- | --- | --- |
+| `null` | **清空**（落空串，之后 LLM 走规则降级） | 用户点「清除」 |
+| `""` / 不传该字段 | 不改，保留库里原值 | 整表 PUT 时没填的输入框（安全） |
+| 含 `*` 的值 | 跳过并 warning | 误把掩码回传（兜底） |
+
+清除按钮发 `{"values": {"llm_api_key": null}}`，**不要发空串**——空串是「没填」，不会清掉。
+
+**`GET /api/health` 的 `ts` 也是带 `T` 的 ISO 串**（`datetime.now().isoformat(timespec="seconds")`），
+现在全站时间字段（REST）格式一致，`new Date()` 直接用。但 **WS 信封里的 `ts` 与
+`telemetry.ts` 是数字 epoch 秒**，两套量纲别混。
 
 ---
 
-## 5. WS：写了 8 种事件，目前只有 5 种真的会来
+## 5. WS：8 种事件全部可用（2026-11-14 晚起）
 
 连接：`ws://localhost:8000/ws/dashboard`，连上后**立刻推一帧**
 `{"type":"mode_changed","data":{"hello":true,...}}`，用它点亮顶部状态条。
@@ -346,19 +357,29 @@ if (Object.keys(dirty).length) await api.put('/settings', { values: dirty })
 | `alert` | ✅ | `{ id, level, source, message }` —— **注意没有 `created_at`**，前端自己打时间戳 |
 | `mode_changed` | ✅ | 首帧 `{ mode, clients, hello: true }`；后续切换 `{ mode, previous }` |
 | `pong` | ✅ | 你发 ping 的回包 `{ clients: N }`（协议回包，不计入上述 8 种业务事件） |
-| `node_state` | ❌ 等队长 | 画布节点高亮用，调度器落地后才有 |
-| `agent_message` | ❌ 等队长 | 对话剧场用，Runner 落地后才有 |
-| `run_status` | ❌ 等队长 | 执行进度用，同上 |
+| `node_state` | ✅ | 画布节点高亮：`{ run_id, node_id, node_type, name, agent_key, state: "started"/"finished", status?, output?, duration_ms? }` |
+| `agent_message` | ✅ | 对话剧场：`{ run_id, agent_key, role, content, tool_calls, citations }` |
+| `run_status` | ✅ | 执行进度：`{ run_id, wf_key, trigger, node_count, status: "running"/"success"/"failed", rounds?, error? }` |
 
-**这三种现在一条都不会来，别以为自己接错了。** 先把另外 5 种接通、页面能跑，
-等队长 runner 落地后这三个才有数据；届时我会在群里说一声。
+**三种都通了（2026-11-14 晚修完），字段与约定以 `docs/contracts/agent-data-contract.md` 第 7 节为准。**
 
-> **2026-11-14 晚更新：画布的三种事件"半通"，别急着接。**
-> 队长引擎已经会发 `node_started` / `node_finished` / `run_started` / `run_finished`，
-> 但（a）名字和上面这张表不一致，（b）载荷恒为空 `{}`（引擎发扁平结构，接线层按
-> `{type,data}` 取）。实测跑完一次工作流，`agent_messages` 表 0 行。
-> 已报给队长修；**修好之前画布高亮仍按本地模拟做**，接上去只会拿到空对象。
-> 详见 `docs/contracts/api_seams.md` 第 6.5 节。
+> **2026-11-14 晚：画布三种事件已可用，可以接了。**
+> 事件名统一为 `node_state` / `run_status`（引擎侧 `engine.WS_TYPE_OF` 单点翻译，
+> 有测试钉住不得超出基座 `WS_TYPES` 白名单），载荷不再是空对象。
+> 区分开始/结束看 `state`，区分成败看 `status` —— 一个 handler 全处理：
+>
+> ```js
+> ws.onmessage = (e) => {
+>   const { type, data } = JSON.parse(e.data);
+>   if (type === "run_status" && data.status === "running") resetCanvas(data.node_count);
+>   if (type === "node_state") data.state === "started" ? lightOn(data.node_id) : lightOff(data.node_id, data.status);
+>   if (type === "run_status" && data.status !== "running") settleRun(data);
+> };
+> ```
+>
+> 三个坑（契约第 7 节有完整版）：**Self-Loop 会让同一个 `node_id` 出现多轮**，按到达顺序播、别按
+> id 去重；**没走到的分支节点不发任何事件**，前端别自己补动画；`run_status` 的 `running`
+> 一定第一个、`success/failed` 一定最后一个，可据此给「卡在进行中」的节点兜底。
 
 画布节点高亮建议先做**本地模拟**（点"运行"后按 1.2s 一个节点自己走），否则演示时
 画布是静的，观感很差。

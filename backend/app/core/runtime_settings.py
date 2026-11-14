@@ -124,18 +124,35 @@ def describe_all() -> list[dict[str, Any]]:
         ]
 
 
-def _secret_write_guard(key: str, value: Any) -> bool:
-    """敏感字段是否应当**跳过写入**（True=保留库中原值）。
+SECRET_ACTION_WRITE = "write"
+SECRET_ACTION_CLEAR = "clear"
+SECRET_ACTION_SKIP = "skip"
 
-    三道闸：空值不改 / 掩码值拒收 / 已加密值拒收（防二次加密）。
-    抽成独立函数是为了能脱离 MySQL 单测——这条逻辑一旦被改坏，
-    症状是 LLM 全线 401，线上极难定位。
+
+def _secret_action(key: str, value: Any) -> str:
+    """敏感字段该做什么：`write`（加密落库）/ `clear`（清空）/ `skip`（保留原值）。
+
+    三态由**前端语义**决定，缺一不可：
+
+    | 收到 | 动作 | 场景 |
+    | --- | --- | --- |
+    | `null` | `clear` | 用户点「清除 Key」，前后端约定用 null 表达「显式清空」 |
+    | `""` / 纯空白 | `skip` | 设置页整表 PUT 时没填的字段——**不能当成清空**，否则改个阈值就把 Key 抹了 |
+    | 含 `*` / 以 `enc:` 开头 | `skip` | `GET /api/settings` 回传的掩码或已加密值，再加密一次就 401 |
+
+    `null` 与 `""` 必须分开：整表 PUT 里没填的输入框天然就是 `""`，
+    把 `""` 当清空会让「改个灌溉区间」顺手删掉 LLM Key，而症状是隔天才发现所有
+    Agent 静默降级。显式清空用 `null`，是可被测试钉住的强语义。
     """
     if key not in SECRET_KEYS:
-        return False
+        return SECRET_ACTION_WRITE
+    if value is None:
+        return SECRET_ACTION_CLEAR
     if not isinstance(value, str) or not value.strip():
-        return True
-    return "*" in value or value.startswith(ENC_PREFIX)
+        return SECRET_ACTION_SKIP
+    if "*" in value or value.startswith(ENC_PREFIX):
+        return SECRET_ACTION_SKIP
+    return SECRET_ACTION_WRITE
 
 
 def set_many(values: dict[str, Any]) -> dict[str, Any]:
@@ -144,24 +161,29 @@ def set_many(values: dict[str, Any]) -> dict[str, Any]:
     mode 变更由调用方（api/settings.py）额外广播 mode_changed，
     避免本模块依赖 WS 管理器造成循环引用。
 
-    敏感字段（SECRET_KEYS）走 `_secret_write_guard`：
-    GET /api/settings 返回的是 sk-a****wxyz，前端把整张表单原样 PUT 回来
-    是最常见的写法；一旦把掩码当明文再加密落库，LLM 调用会全部 401 且极难排查。
-    命中闸门只记 warning 并跳过该项，不抛异常——设置页不该因一个字段整体失败。
+    敏感字段（SECRET_KEYS）走 `_secret_action` 三态判定（见其 docstring）。
+    命中 `skip` 只记 warning 并跳过该项，不抛异常——设置页不该因一个字段整体失败。
     """
     changed: list[str] = []
     skipped: list[str] = []
+    cleared: list[str] = []
     with session_scope() as db:
         for key, value in values.items():
-            if _secret_write_guard(key, value):
+            action = _secret_action(key, value)
+            if action == SECRET_ACTION_SKIP:
                 logger.warning(
-                    "跳过敏感配置 {} 的写入（收到 {!r}）：空值视为不改，掩码/密文视为前端回传，均保留库中原值",
+                    "跳过敏感配置 {} 的写入（收到 {!r}）：空串视为未填写，掩码/密文视为前端回传，均保留库中原值",
                     key,
                     str(value)[:12],
                 )
                 skipped.append(key)
                 continue
-            if key in SECRET_KEYS:
+            if action == SECRET_ACTION_CLEAR:
+                # 落明文空串而不是加密空串：`decrypt("")` 与 `mask("")` 都返回 ""，
+                # GET /api/settings 于是显示空输入框 = 「确实没有 Key」，读侧无需特判。
+                value = ""
+                cleared.append(key)
+            elif key in SECRET_KEYS:
                 value = encrypt(value)
             row = db.scalar(select(Setting).where(Setting.key == key))
             if row is None:
@@ -174,6 +196,8 @@ def set_many(values: dict[str, Any]) -> dict[str, Any]:
     _cache_drop()
     if changed:
         logger.info("运行期配置已更新：{}", ", ".join(changed))
+    if cleared:
+        logger.warning("敏感配置已被清空：{}（LLM 将走规则降级）", ", ".join(cleared))
     if skipped:
         logger.info("运行期配置已跳过：{}", ", ".join(skipped))
     return get_all()

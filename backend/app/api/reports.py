@@ -26,7 +26,7 @@ def to_summary(r: Report) -> dict[str, Any]:
         "run_id": r.run_id,
         "report_type": r.report_type,
         "stats": r.stats_json,
-        "created_at": r.created_at.isoformat(sep=" ", timespec="seconds") if r.created_at else None,
+        "created_at": r.created_at.isoformat(timespec="seconds") if r.created_at else None,
     }
 
 
