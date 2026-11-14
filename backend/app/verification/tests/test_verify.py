@@ -104,5 +104,45 @@ def test_report_renders_evidence_chain():
 
 def test_report_without_rounds_is_still_renderable():
     markdown = render_report(ReportData(run_id=1, outcome="running"))
-    assert "尚未产生验证结果" in markdown
+    assert "没有产生验证记录" in markdown
     assert "结论" in markdown
+
+
+def test_report_section_numbers_have_no_gap():
+    """没有验证结果时「逐轮对照」整节不出现,章节号必须连号,不能 一、三、四 跳。"""
+    markdown = render_report(ReportData(run_id=1, outcome="running"))
+    headings = [line for line in markdown.splitlines() if line.startswith("## ")]
+    assert headings == ["## 一、结论", "## 二、诊断与修正", "## 三、执行时间线"]
+
+
+def test_report_unverified_run_is_not_called_success():
+    """run 跑完但验证官没出结论:不能因为 outcome 兜底成 success 就写「闭环成功」。"""
+    markdown = render_report(ReportData(run_id=7, outcome="unverified"))
+    assert "未产生验证结果" in markdown
+    assert "闭环成功" not in markdown
+    assert "不能算作一次成功的闭环" in markdown
+
+
+def test_report_warns_over_irrigation_and_pointless_round():
+    data = ReportData(
+        run_id=9,
+        outcome="success",
+        rounds=[RoundView(round_no=1, baseline=58.0, measured=71.0, achievement=100.0,
+                          confidence=0.9, verdict="success", duration_s=45)],
+        achievement_detail={"over_irrigated": True, "baseline_in_range": True},
+    )
+    markdown = render_report(data)
+    assert "存在过浇风险" in markdown
+    assert "本轮本无需作业" in markdown
+
+
+def test_report_renders_round_duration():
+    """轮次表的「浇水时长」要显示真实秒数,不能每轮都是 0.00s。"""
+    data = ReportData(
+        run_id=3,
+        outcome="success",
+        rounds=[RoundView(round_no=1, baseline=38.5, measured=60.0, achievement=100.0,
+                          confidence=1.0, verdict="success", duration_s=45)],
+    )
+    markdown = render_report(data)
+    assert "45.00s" in markdown and "0.00s" not in markdown

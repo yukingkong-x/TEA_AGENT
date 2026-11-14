@@ -44,9 +44,27 @@ def test_format_empty_rows_returns_empty_string():
 
 
 def test_roster_text_is_empty_without_base_or_table(monkeypatch):
-    """本分支没有 models:必须静默返回空串,不能让 run 起不来。"""
+    """没有基座（models / devices 表）时必须静默返回空串,不能让 run 起不来。
+
+    合并后的仓库里表是真的,所以这里显式把取数打瘸,模拟「本分支无基座」;
+    直接断言 == "" 在联调环境里会因为真读到 6 台设备而误报。
+    """
     roster.reset_cache()
     monkeypatch.setattr(roster, "CACHE_TTL_S", 0.0)
+
+    def _boom():
+        raise ModuleNotFoundError("No module named 'app.models.devices'")
+
+    monkeypatch.setattr(roster, "_query_rows", _boom)
+
+    assert roster.device_roster_text(force=True) == ""
+
+
+def test_roster_text_survives_empty_table(monkeypatch):
+    """表在但一条设备都没有:也是空串,不是半截标题。"""
+    roster.reset_cache()
+    monkeypatch.setattr(roster, "CACHE_TTL_S", 0.0)
+    monkeypatch.setattr(roster, "_query_rows", lambda: [])
 
     assert roster.device_roster_text(force=True) == ""
 

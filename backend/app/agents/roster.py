@@ -88,6 +88,28 @@ def format_roster(rows: list[tuple], mode: str = "") -> str:
     return "\n".join(lines)
 
 
+def _query_rows() -> list[tuple]:
+    """查设备表（device_id, name, role, location, online）。
+
+    单独抽出来是为了可测：本分支（队长地盘）没有 `app.models`，基座合进来之前
+    这里必然 ImportError，调用方据此静默跳过注入。合并后的仓库里表是真的，
+    单测要模拟「没有基座」就只能从这里下手。
+    """
+    from sqlalchemy import select
+
+    from app.db import session_scope
+    from app.models.devices import Device
+
+    with session_scope() as db:
+        return [
+            tuple(r)
+            for r in db.execute(
+                select(Device.device_id, Device.name, Device.role, Device.location, Device.online)
+                .order_by(Device.is_mock, Device.id)
+            ).all()
+        ]
+
+
 def device_roster_text(force: bool = False) -> str:
     """返回「设备事实」文本;拿不到设备表时返回空串(调用方据此跳过注入)。"""
     global _cache
@@ -96,16 +118,7 @@ def device_roster_text(force: bool = False) -> str:
         return _cache[1]
 
     try:
-        from sqlalchemy import select
-
-        from app.db import session_scope
-        from app.models.devices import Device
-
-        with session_scope() as db:
-            rows = db.execute(
-                select(Device.device_id, Device.name, Device.role, Device.location, Device.online)
-                .order_by(Device.is_mock, Device.id)
-            ).all()
+        rows = _query_rows()
     except Exception:  # noqa: BLE001 没有基座/表未建,静默跳过注入
         return ""
 

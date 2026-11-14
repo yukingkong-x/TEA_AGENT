@@ -333,11 +333,42 @@ def _schedule_correction(task_no: str, payload: dict) -> Any:
 
 # ─────────────────────────── 报告 ───────────────────────────
 
+def _event_text(name: str, task_no: Optional[str], detail: dict) -> tuple[str, str]:
+    """事件流水翻成人话:(描述, 状态列)。
+
+    task_events 的 event 只有 `dispatch` / `task_status` 这种机器名,直接进报告
+    等于让评委看枚举;这里换成「谁、对哪张单、做了什么」。
+    """
+    task = task_no or detail.get("task_no") or "—"
+    if name == "dispatch":
+        return f"{task} 下发 {detail.get('action') or 'cmd'}", "已下发"
+    if name == "task_status":
+        frm, to = detail.get("from"), detail.get("to")
+        if frm or to:
+            return f"{task} {frm or '?'}→{to or '?'}", str(to or "")
+        # 设备侧的两跳:先回「接单」,再回「跑完」。只写 done 会出现两行一样的记录。
+        if detail.get("ack_stage") == "received":
+            return f"{task} 设备已接单", "received"
+        inner = detail.get("detail") or {}
+        if detail.get("result") == "done":
+            parts = []
+            if isinstance(inner.get("executed_s"), (int, float)):
+                parts.append(f"执行 {inner['executed_s']:.0f}s")
+            if isinstance(inner.get("moisture_gain"), (int, float)):
+                parts.append(f"墒情 +{inner['moisture_gain']:.2f}%")
+            suffix = f"（{'，'.join(parts)}）" if parts else ""
+            return f"{task} 设备执行完成{suffix}", "done"
+        stage = detail.get("result") or detail.get("ack_stage") or ""
+        return f"{task} 设备回执 {stage}".strip(), str(stage)
+    return f"{task} {name}", ""
+
+
 def _load_run(run_id: int) -> dict:
     from sqlalchemy import select
 
     from app.db import session_scope
     from app.models.alerts import Alert
+    from app.models.task_events import TaskEvent
     from app.models.tasks import Task
     from app.models.verifications import Verification
     from app.models.workflow_runs import WorkflowRun
@@ -355,9 +386,21 @@ def _load_run(run_id: int) -> dict:
             select(Task).where(Task.run_id == run_id).order_by(Task.id)
         ).all()
 
-        rounds = [
-            {
-                "round_no": index + 1,
+        # 轮次表要呈现「这一轮浇了多久」。时长只存在于被验证那条任务的载荷里
+        # (params.duration_s),verifications 表没有这个列,所以按 task_no 回查。
+        by_task = {t.task_no: t for t in tasks}
+
+        def _payload_of(task_no: Optional[str]) -> dict:
+            row = by_task.get(task_no or "")
+            return dict(row.payload_json or {}) if row is not None else {}
+
+        rounds = []
+        for index, v in enumerate(verifications):
+            payload = _payload_of(v.task_no)
+            rounds.append({
+                # 轮次以任务载荷的 round_no 为准(Self-Loop 补灌任务带 round_no=2);
+                # 取不到才按第几条验证记录排,否则两轮都显示「第 1 轮」
+                "round_no": int(payload.get("round_no", index + 1) or index + 1),
                 "baseline": _f(v.baseline_value),            # NULL → None → 报告显示「—」
                 "measured": _f(v.measured_value, 0.0),
                 "achievement": _f(v.achievement, 0.0),
@@ -365,21 +408,43 @@ def _load_run(run_id: int) -> dict:
                 "verdict": v.conclusion or "failed",
                 "target_low": _f(v.target_low, 55.0),
                 "target_high": _f(v.target_high, 65.0),
-                "duration_s": 0.0,
-            }
-            for index, v in enumerate(verifications)
-        ]
-        timeline = [
-            {
-                "ts": (t.created_at or run.started_at).isoformat() if (t.created_at or run.started_at) else "",
-                "name": t.type,
-                "event": t.task_no,
-                "status": t.status,
-                "duration_ms": int(((t.updated_at - t.created_at).total_seconds() * 1000))
-                if t.updated_at and t.created_at else 0,
-            }
-            for t in tasks
-        ]
+                # 写死 0.0 会让每轮都显示 "0.00s",报告看不出「为什么这轮只浇 45 秒」
+                "duration_s": _duration_of(payload) if payload else 0.0,
+            })
+        # 时间线优先用 task_events:调度派单 / 设备回执 / 执行完成都有真实时间戳,
+        # 能看出「派单到回执 3 秒、回执到跑完 45 秒」。只有任务行的话,整条流水线
+        # 会塌成一行「device_cmd 50000ms」,报告看不出卡在哪一段。
+        events = db.scalars(
+            select(TaskEvent).where(TaskEvent.run_id == run_id).order_by(TaskEvent.id)
+        ).all()
+        timeline: list[dict] = []
+        for index, event in enumerate(events):
+            detail = dict(event.payload_json or {})
+            nxt = events[index + 1] if index + 1 < len(events) else None
+            gap_ms = 0
+            if nxt is not None and event.created_at and nxt.created_at:
+                gap_ms = int((nxt.created_at - event.created_at).total_seconds() * 1000)
+            text, state = _event_text(event.event, event.task_no, detail)
+            timeline.append({
+                "ts": event.created_at.strftime("%H:%M:%S") if event.created_at else "",
+                "name": detail.get("node_id") or event.actor or "",
+                "event": text,
+                "status": state,
+                "duration_ms": gap_ms,
+            })
+
+        if not timeline:   # 早期 run 没有事件流水:退回按任务行渲染,总比空表强
+            timeline = [
+                {
+                    "ts": t.created_at.strftime("%H:%M:%S") if t.created_at else "",
+                    "name": t.assigned_agent or "scheduler",
+                    "event": f"{t.task_no} {t.type}",
+                    "status": t.status,
+                    "duration_ms": int(((t.updated_at - t.created_at).total_seconds() * 1000))
+                    if t.updated_at and t.created_at else 0,
+                }
+                for t in tasks
+            ]
         alerts = []
         if run.started_at is not None:
             window_end = run.finished_at or datetime.now()
@@ -392,6 +457,10 @@ def _load_run(run_id: int) -> dict:
             ]
         last = verifications[-1] if verifications else None
         detail = dict(last.conf_detail_json or {}) if last else {}
+        last_low = _f(last.target_low, 55.0) if last else 55.0
+        last_high = _f(last.target_high, 65.0) if last else 65.0
+        last_baseline = _f(last.baseline_value) if last else None
+        last_measured = _f(last.measured_value) if last else None
 
         return {
             "run_id": run_id,
@@ -399,14 +468,23 @@ def _load_run(run_id: int) -> dict:
             "trigger": run.trigger or "manual",
             "started_at": run.started_at.isoformat(timespec="seconds") if run.started_at else "",
             "finished_at": run.finished_at.isoformat(timespec="seconds") if run.finished_at else "",
-            "outcome": (last.conclusion if last else run.status),
+            # 没有验证记录就不能借 run.status 说「闭环成功」:run 跑完只代表流程走完,
+            # 达没达标是验证官的事。给 unverified,报告里如实写「未产生验证结果」。
+            "outcome": (last.conclusion if last
+                        else ("unverified" if run.status in {"success", "failed"} else run.status)),
             "rounds": rounds,
             "timeline": timeline,
             "alerts": alerts,
             "confidence_reasons": detail.get("reasons") or [],
             "achievement_detail": {
-                "target_low": _f(last.target_low, 55.0) if last else 55.0,
-                "target_high": _f(last.target_high, 65.0) if last else 65.0,
+                "target_low": last_low,
+                "target_high": last_high,
+                # 过浇:复测超过目标上限(达成率记 100 但不算达标,报告要提示)
+                "over_irrigated": bool(last_measured is not None and last_measured > last_high),
+                # 白浇:执行前基线已在目标区间内,这一轮本来就不该开工
+                "baseline_in_range": bool(
+                    last_baseline is not None and last_low <= last_baseline <= last_high
+                ),
             },
         }
 
