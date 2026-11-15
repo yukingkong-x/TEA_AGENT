@@ -707,7 +707,9 @@ class WorkflowEngine:
             context.setdefault("feedbacks", []).append(feedback)
             return
 
-        duration = max(5.0, min(120.0, duration))
+        # 取整秒:设备层 `_clamp_params` 用 int() 截断,这里给 19.9 会变成「载荷 19.9、
+        # 实浇 19、报告两列对不上」。向下游发的必须是同一个数。
+        duration = float(round(max(5.0, min(120.0, duration))))
         payload: dict[str, Any] = {
             "action": "pump",
             "params": {"duration_s": duration},

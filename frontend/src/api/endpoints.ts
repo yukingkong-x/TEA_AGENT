@@ -16,6 +16,9 @@ import type {
   SensorLatestDto,
   SettingsDto,
   RunDetailDto,
+  RunRoundsDto,
+  NodeRecordDto,
+  NodeSummaryDto,
   TaskDto,
   TaskEventDto,
   VerificationRecordDto,
@@ -121,6 +124,17 @@ export const endpoints = {
   /** 执行详情：run + tasks + messages（对话剧场的数据源） */
   run: (id: number) => api.get<RunDetailDto>(`${apiPath.runs}/${id}`),
 
+  /** 节点级耗时（PRD 9.1 报告时间线）；items 为空 = 这次 run 没有节点明细，回退任务轨迹 */
+  runNodes: (id: number) => api.get<{ run_id: number; items: NodeRecordDto[]; summary: NodeSummaryDto }>(
+    `${apiPath.runs}/${id}/nodes`,
+  ),
+
+  /**
+   * 轮次视图：结论 + 每轮基线/复测/达成率/浇水时长/置信度构成。
+   * 与 `generateReport` 生成的 Markdown 同源，页面上看到的就是 PDF 里那份数字。
+   */
+  runRounds: (id: number) => api.get<RunRoundsDto>(`${apiPath.runs}/${id}/rounds`),
+
   verifyList: (params: { task_no?: string; conclusion?: string; page?: number; page_size?: number } = {}) =>
     api.get<PageDto<VerificationRecordDto>>(apiPath.verify, params),
 
@@ -133,7 +147,8 @@ export const endpoints = {
       90_000,
     ),
 
-  reports: (params: { report_type?: string; page?: number; page_size?: number } = {}) =>
+  /** 报告列表：按 run_id 过滤，拿某次执行已生成的那份（避免重复生成） */
+  reports: (params: { run_id?: number; report_type?: string; page?: number; page_size?: number } = {}) =>
     api.get<PageDto<Record<string, unknown>>>(apiPath.reports, params),
 
   report: (id: number) => api.get<Record<string, unknown>>(`${apiPath.reports}/${id}`),

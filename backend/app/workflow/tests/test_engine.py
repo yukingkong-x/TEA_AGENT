@@ -692,7 +692,8 @@ def test_self_loop_creates_correction_task_from_verification_plan():
     created = [params["payload"] for name, params in harness.tool_calls if name == "create_task"]
     assert len(created) >= 2, created                 # 决策 1 张 + 修正至少 1 张
     assert created[-1]["trigger"] == "selfloop"       # PRD 11.4.2 的修正任务标记
-    assert created[-1]["params"]["duration_s"] == 19.9   # 用验证层算出的补灌时长
+    # 验证层算 19.9,建单前取整秒 → 20.0:设备只认整秒,载荷必须和实浇同一个数
+    assert created[-1]["params"]["duration_s"] == 20.0
     assert created[-1]["device_id"]                    # 修正单也要有归属终端
 
     feedbacks = result.context.get("feedbacks") or []

@@ -145,8 +145,16 @@ def to_dict(row: WorkflowNodeRecord) -> dict[str, Any]:
 def summarize(nodes: list[dict[str, Any]]) -> dict[str, Any]:
     """报告页顶部的汇总：总耗时、最慢节点、降级数。纯函数，方便单测。"""
     if not nodes:
-        return {"node_count": 0, "duration_ms": 0, "slowest": None, "degraded_count": 0, "failed_count": 0}
-    slowest = max(nodes, key=lambda n: int(n.get("duration_ms") or 0))
+        return {"node_count": 0, "duration_ms": 0, "slowest": None,
+                "loop": None, "degraded_count": 0, "failed_count": 0}
+    # loop 节点的耗时是**包住整个 body 的聚合**（run #33 实测 n11b 99.7s，里面就是
+    # n9 浇水 + n10 渗透 + n11 验证），混进来当「最慢节点」会让前端把整段 Self-Loop
+    # 画成一根慢柱子，真正该被优化的节点（n10 渗透等待 90s）反而看不见。
+    # 所以 loop 单独给一份，slowest 只在「真正干活的节点」里挑。
+    loops = [n for n in nodes if n.get("node_type") == "loop"]
+    workers = [n for n in nodes if n.get("node_type") != "loop"] or nodes
+    slowest = max(workers, key=lambda n: int(n.get("duration_ms") or 0))
+    loop_top = max(loops, key=lambda n: int(n.get("duration_ms") or 0)) if loops else None
     return {
         "node_count": len(nodes),
         "duration_ms": sum(int(n.get("duration_ms") or 0) for n in nodes),
@@ -155,6 +163,12 @@ def summarize(nodes: list[dict[str, Any]]) -> dict[str, Any]:
             "name": slowest.get("name"),
             "duration_ms": int(slowest.get("duration_ms") or 0),
         },
+        # Self-Loop 阶段总耗时：包含修正 → 执行 → 渗透 → 复验，别拿去和单节点比快慢
+        "loop": {
+            "node_id": loop_top.get("node_id"),
+            "name": loop_top.get("name"),
+            "duration_ms": int(loop_top.get("duration_ms") or 0),
+        } if loop_top else None,
         "degraded_count": sum(1 for n in nodes if n.get("degraded")),
         "failed_count": sum(1 for n in nodes if n.get("status") == "failed"),
     }

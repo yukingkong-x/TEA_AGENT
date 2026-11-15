@@ -1,4 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { endpoints } from '../api/endpoints'
+import type { NodeRecordDto, NodeSummaryDto, RunRoundsDto, WorkflowRunDto } from '../api/types'
 import { ConfidenceGauge } from '../components/ReportGauges'
 import { Markdown } from '../components/Markdown'
 import { PageFrame } from '../components/PageFrame'
@@ -9,7 +11,9 @@ import {
   formatDuration,
   outcomeLabel,
   patrolRuns,
+  runFromApi,
   type PatrolRound,
+  type PatrolRun,
   type RunOutcome,
 } from '../data/patrolReport'
 import { CONFIDENCE_WEIGHTS, NEEDS_HUMAN_THRESHOLD, pct, raw01, weightedConfidence } from '../lib/units'
@@ -21,11 +25,102 @@ function roundResultLabel(handedOff: boolean, closed: boolean, missing: boolean)
   return closed ? '闭环' : '未达标'
 }
 
+/** 真实 run 的选项前缀；样例带前缀是为了和 `run-1001` 这类假 id 区分开 */
+const REAL = 'real:'
+const SAMPLE = 'sample:'
+
 export function ReportPage() {
-  const [runId, setRunId] = useState(patrolRuns[0].id)
+  /** 后端真实的执行实例（有几次巡园就有几条） */
+  const [realRuns, setRealRuns] = useState<WorkflowRunDto[]>([])
+  const [selected, setSelected] = useState<string>(`${SAMPLE}${patrolRuns[0].id}`)
+  const [view, setView] = useState<RunRoundsDto | null>(null)
+  const [nodes, setNodes] = useState<NodeRecordDto[]>([])
+  const [nodeSummary, setNodeSummary] = useState<NodeSummaryDto | null>(null)
   const [daily, setDaily] = useState<string | null>(null)
-  const run = patrolRuns.find((item) => item.id === runId) ?? patrolRuns[0]
+  const [dailyNote, setDailyNote] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  /** 用户是否亲手选过（选过就不再被「最新真实 run」抢走） */
+  const touched = useRef(false)
+
+  // 真实 run 列表：拿到就把选中项切到最新一条真实执行上（演示时打开就是真数据）
+  // 但只在用户还没动过选择器时才切——否则「先选了样例/旧 run，列表后到」会被抢回最新一条
+  useEffect(() => {
+    let alive = true
+    endpoints
+      .runs(1, 50)
+      .then((page) => {
+        if (!alive) return
+        const items = page.items ?? []
+        setRealRuns(items)
+        if (items.length > 0 && !touched.current) setSelected(`${REAL}${items[0].id}`)
+      })
+      .catch(() => {
+        // 接口挂了就老实用样例，页面不能白屏
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  const runId = selected.startsWith(REAL) ? Number(selected.slice(REAL.length)) : null
+
+  // 轮次与节点耗时：同一个 run 的两份数据一起拉，页面上「第几轮」和「哪段慢」能对上
+  useEffect(() => {
+    if (runId === null) {
+      setView(null)
+      setNodes([])
+      setNodeSummary(null)
+      return
+    }
+    let alive = true
+    setLoading(true)
+    Promise.all([endpoints.runRounds(runId), endpoints.runNodes(runId).catch(() => null)])
+      .then(([rounds, nodePage]) => {
+        if (!alive) return
+        setView(rounds)
+        setNodes(nodePage?.items ?? [])
+        setNodeSummary(nodePage?.summary ?? null)
+        setError('')
+      })
+      .catch((err) => {
+        if (!alive) return
+        setError(err instanceof Error ? err.message : String(err))
+        setView(null)
+      })
+      .finally(() => alive && setLoading(false))
+    return () => {
+      alive = false
+    }
+  }, [runId])
+
+  const isReal = runId !== null
+  const sampleRun = patrolRuns.find((item) => `${SAMPLE}${item.id}` === selected) ?? patrolRuns[0]
+  // 真实数据到了就用真实数据；接口失败时退回样例，并在页面上标明「这是样例」
+  const run: PatrolRun = isReal && view ? runFromApi(view) : sampleRun
   const latest = run.rounds.length ? run.rounds[run.rounds.length - 1] : null
+
+  /** 真实 run 的日报取后端生成的那份 Markdown（与导出 PDF 同源），样例走本地拼装 */
+  const makeDaily = useCallback(async () => {
+    if (!isReal) {
+      setDailyNote('样例数据（后端无该执行实例）')
+      setDaily(dailyMarkdown(run))
+      return
+    }
+    try {
+      // 先找已生成的报告，避免每次点都往 reports 表插一条
+      const existing = await endpoints.reports({ run_id: runId as number, report_type: 'run', page: 1, page_size: 1 })
+      const hit = existing.items[0] as { id: number } | undefined
+      const reportId = hit?.id ?? (await endpoints.generateReport(runId as number)).report_id
+      const detail = (await endpoints.report(reportId)) as { content_md?: string }
+      setDailyNote(`后端报告 #${reportId}（与导出 PDF 同源）`)
+      setDaily(detail.content_md ?? dailyMarkdown(run))
+    } catch (err) {
+      setDailyNote('后端报告生成失败，下面这份是页面按当前轮次拼的')
+      setDaily(dailyMarkdown(run))
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }, [isReal, run, runId])
 
   return (
     <PageFrame title="验证报告">
@@ -35,18 +130,31 @@ export function ReportPage() {
             本次巡园
             <select
               id="report-run"
-              value={run.id}
+              value={selected}
               onChange={(event) => {
-                setRunId(event.target.value)
+                touched.current = true
+                setSelected(event.target.value)
                 setDaily(null)
+                setDailyNote('')
               }}
               className="h-11 rounded-btn border border-line bg-panel px-3 text-base text-paper"
             >
-              {patrolRuns.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name}
-                </option>
-              ))}
+              {realRuns.length > 0 ? (
+                <optgroup label="真实执行">
+                  {realRuns.map((item) => (
+                    <option key={item.id} value={`${REAL}${item.id}`}>
+                      #{item.id} · {item.started_at?.replace('T', ' ').slice(5, 16) ?? '未开始'} · {item.status}
+                    </option>
+                  ))}
+                </optgroup>
+              ) : null}
+              <optgroup label={realRuns.length > 0 ? '样例数据（演示用，非真实执行）' : '样例数据'}>
+                {patrolRuns.map((item) => (
+                  <option key={item.id} value={`${SAMPLE}${item.id}`}>
+                    {item.name}
+                  </option>
+                ))}
+              </optgroup>
             </select>
           </label>
           <p className="text-sm text-mute">
@@ -56,6 +164,18 @@ export function ReportPage() {
               : '。这次没有验证记录，不判定是否达标。'}
           </p>
         </div>
+
+        {loading ? <p className="text-sm text-mute">正在读取这次执行的验证记录…</p> : null}
+        {error ? (
+          <p className="rounded-btn bg-[#FFF4CC] px-3 py-2 text-sm text-[#8A6414]">
+            读取失败：{error}
+          </p>
+        ) : null}
+        {isReal && !view && !loading ? (
+          <p className="text-sm text-mute">
+            这次执行还没有轮次数据（验证官未出记录，或 run 还没跑完），下面按「未产生验证结果」处理。
+          </p>
+        ) : null}
 
         {run.outcome === 'needs_human' ? (
           // 转人工不是失败：系统已经停手，不会自动重试、不会再下发设备指令
@@ -79,7 +199,7 @@ export function ReportPage() {
                 <p className="text-sm text-mute">浇水前到两轮复测</p>
               </div>
               {run.rounds.length >= 2 ? (
-                <ReportTrend />
+                <ReportTrend rounds={run.rounds} />
               ) : (
                 <p className="grid h-[280px] place-items-center text-sm text-mute">这次只有一轮，没有两轮湿度轨迹。</p>
               )}
@@ -108,11 +228,13 @@ export function ReportPage() {
           />
         ))}
 
+        <NodeTimeline nodes={nodes} summary={nodeSummary} />
+
         <section className="rounded-2xl bg-[#F7F8FA] px-5 py-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="text-paper">日报</h2>
             <div className="no-print flex gap-3">
-              <button type="button" className="h-11 rounded-btn bg-tea px-4 text-base text-white hover:bg-teaHover active:bg-teaPress" onClick={() => setDaily(dailyMarkdown(run))}>
+              <button type="button" className="h-11 rounded-btn bg-tea px-4 text-base text-white hover:bg-teaHover active:bg-teaPress" onClick={() => void makeDaily()}>
                 生成日报
               </button>
               <button type="button" className="h-11 rounded-btn border border-line bg-panel px-4 text-base text-paper hover:border-tea hover:text-tea" onClick={() => window.print()}>
@@ -121,11 +243,87 @@ export function ReportPage() {
             </div>
           </div>
           <div className="mt-4">
-            {daily ? <Markdown source={daily} /> : <p className="text-sm text-mute">点生成日报后，这里出现报告正文。</p>}
+            {daily ? (
+              <>
+                {dailyNote ? <p className="mb-2 text-xs leading-normal text-mute">来源：{dailyNote}</p> : null}
+                <Markdown source={daily} />
+              </>
+            ) : (
+              <p className="text-sm text-mute">点生成日报后，这里出现报告正文。</p>
+            )}
           </div>
         </section>
       </div>
     </PageFrame>
+  )
+}
+
+/**
+ * 节点耗时（B 的 workflow_node_records）。
+ * items 为空 = 这次 run 没有节点明细（引擎接表之前的历史 run），整段不渲染——
+ * 别显示「加载失败」，那不是错误，只是没这层数据。
+ */
+function NodeTimeline({ nodes, summary }: { nodes: NodeRecordDto[]; summary: NodeSummaryDto | null }) {
+  if (!nodes.length) return null
+  const rounds = [...new Set(nodes.map((node) => node.round_no || 1))].sort((a, b) => a - b)
+  return (
+    <section className="rounded-2xl bg-[#F7F8FA] px-5 py-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-paper">节点耗时</h2>
+        {summary ? (
+          <p className="num text-sm text-mute">
+            {summary.node_count} 个节点 · 共 {(summary.duration_ms / 1000).toFixed(1)}s
+            {summary.slowest ? ` · 最慢 ${summary.slowest.name} ${(summary.slowest.duration_ms / 1000).toFixed(1)}s` : ''}
+            {summary.loop ? ` · Self-Loop 阶段 ${(summary.loop.duration_ms / 1000).toFixed(1)}s` : ''}
+            {summary.degraded_count ? ` · 降级 ${summary.degraded_count}` : ''}
+            {summary.failed_count ? ` · 失败 ${summary.failed_count}` : ''}
+          </p>
+        ) : null}
+      </div>
+      <div className="mt-3 overflow-x-auto">
+        <table className="w-full border-collapse text-left text-sm leading-normal">
+          <thead>
+            <tr className="text-xs text-mute">
+              <th className="border-b border-line px-3 py-2 text-left font-normal">节点</th>
+              <th className="border-b border-line px-3 py-2 text-left font-normal">轮次</th>
+              <th className="border-b border-line px-3 py-2 text-left font-normal">耗时</th>
+              <th className="border-b border-line px-3 py-2 text-left font-normal">工具</th>
+              <th className="border-b border-line px-3 py-2 text-left font-normal">状态</th>
+            </tr>
+          </thead>
+          <tbody>
+            {nodes.map((node) => (
+              <tr key={`${node.node_id}-${node.round_no}`}>
+                <td className="border-b border-line px-3 py-2 text-paper">
+                  <span className="num mr-2 text-xs text-mute">{node.node_id}</span>
+                  {node.name}
+                  {node.node_type === 'loop' ? <span className="ml-2 text-xs text-mute">（含整个修正轮）</span> : null}
+                </td>
+                <td className="num border-b border-line px-3 py-2 text-dim">
+                  {rounds.length > 1 ? `第 ${node.round_no || 1} 轮` : '—'}
+                </td>
+                <td className="num border-b border-line px-3 py-2 text-paper">{(node.duration_ms / 1000).toFixed(1)}s</td>
+                <td className="num border-b border-line px-3 py-2 text-dim">{node.tool_calls?.length || '—'}</td>
+                <td className="border-b border-line px-3 py-2">
+                  <span
+                    className={`inline-flex h-6 items-center rounded-btn px-2 text-xs leading-none ${
+                      node.status === 'failed'
+                        ? 'bg-[#FFECEC] text-[#B42318]'
+                        : node.status === 'done'
+                          ? 'bg-panel2 text-tea'
+                          : 'bg-[#EEF1F4] text-[#5A6474]'
+                    }`}
+                  >
+                    {node.status}
+                  </span>
+                  {node.degraded ? <span className="ml-2 text-xs text-[#8A6414]">降级</span> : null}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
   )
 }
 

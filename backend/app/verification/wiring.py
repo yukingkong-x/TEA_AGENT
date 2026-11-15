@@ -443,6 +443,9 @@ def _load_run(run_id: int) -> dict:
                 # 写死 0.0 会让每轮都显示 "0.00s",报告看不出「为什么这轮只浇 45 秒」
                 "duration_s": _duration_of(payload) if payload else 0.0,
                 "note": feedback_notes.get(v.task_no, ""),
+                # 三路原始分(0-1):报告页的「置信度构成」要显示每轮的分项,
+                # 只给总分时页面只能写一个 90,看不出是数据质量掉还是规则不一致。
+                "conf_detail": dict(v.conf_detail_json or {}),
             })
         # 时间线优先用 task_events:调度派单 / 设备回执 / 执行完成都有真实时间戳,
         # 能看出「派单到回执 3 秒、回执到跑完 45 秒」。只有任务行的话,整条流水线
@@ -503,8 +506,13 @@ def _load_run(run_id: int) -> dict:
             "finished_at": run.finished_at.isoformat(timespec="seconds") if run.finished_at else "",
             # 没有验证记录就不能借 run.status 说「闭环成功」:run 跑完只代表流程走完,
             # 达没达标是验证官的事。给 unverified,报告里如实写「未产生验证结果」。
-            "outcome": (last.conclusion if last
-                        else ("unverified" if run.status in {"success", "failed"} else run.status)),
+            # 反过来,run 已经落 needs_human(Self-Loop 轮次用完)时不能被最后一轮的
+            # conclusion 覆盖成 failed:failed 读起来像「已排下一轮修正」,实际已经停手转人工。
+            "outcome": (
+                "needs_human" if run.status == "needs_human"
+                else last.conclusion if last
+                else ("unverified" if run.status in {"success", "failed"} else run.status)
+            ),
             "rounds": rounds,
             "timeline": timeline,
             "alerts": alerts,
@@ -520,6 +528,16 @@ def _load_run(run_id: int) -> dict:
                 ),
             },
         }
+
+
+def load_run_view(run_id: int) -> dict:
+    """报告页数据源：一次 run 的结论 / 每轮基线-复测-达成率-浇水时长 / 诊断。
+
+    和生成 Markdown 用的是同一份 `_load_run`——**同一批数字只能有一个出处**。
+    前端如果自己按 verifications 表拼轮次，一定会漏掉「浇水时长」（在任务载荷里）
+    和「诊断」（在 feedback_logs 里），报告页就会和导出的 PDF 对不上。
+    """
+    return _load_run(run_id)
 
 
 def _save_report(run_id: int, markdown: str) -> int:

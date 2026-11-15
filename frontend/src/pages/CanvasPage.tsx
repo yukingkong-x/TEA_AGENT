@@ -726,8 +726,8 @@ function Inspector({
         <p className="mt-2 text-sm leading-normal text-paper">{node.data.speech ?? '还没有跑到这一步。'}</p>
         {node.data.calls?.length ? (
           <ul className="mt-3 grid gap-2">
-            {node.data.calls.map((call) => (
-              <li key={call.name} className="rounded-btn bg-ink px-3 py-2 text-sm leading-normal">
+            {node.data.calls.map((call, index) => (
+              <li key={`${call.name}-${index}`} className="rounded-btn bg-ink px-3 py-2 text-sm leading-normal">
                 <span className="block text-paper">{call.name}</span>
                 <span className="mt-1 block text-mute">{call.detail}</span>
               </li>

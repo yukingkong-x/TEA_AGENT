@@ -6,11 +6,17 @@
  * 2. 必须挂 onmessage，否则连上了也一条都收不到；
  * 3. 必须每 20s 发一次 `{"type":"ping"}`，后端靠它探测断线（回 pong）。
  * 另外 WS 路由不带 /api 前缀，是 `/ws/dashboard`。
+ *
+ * 兜底改成**同源**而不是 `hostname:8000`：Docker 部署时前端在 nginx 后面，
+ * 8000 是不对外暴露的内部端口，写死它等于线上永远连不上；用 https 反代时
+ * 还需要 wss。同源 + 由 nginx/vite 转发 /ws，开发、Docker、HTTPS 三种场合同一份代码。
  */
 import type { DashMessage } from './types'
 
+const wsScheme = location.protocol === 'https:' ? 'wss:' : 'ws:'
+
 export const WS_URL =
-  import.meta.env.VITE_WS_URL ?? `ws://${location.hostname}:8000/ws/dashboard`
+  import.meta.env.VITE_WS_URL ?? `${wsScheme}//${location.host}/ws/dashboard`
 
 type Handler = (message: DashMessage) => void
 

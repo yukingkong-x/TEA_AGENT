@@ -353,6 +353,9 @@ export type RunDetailDto = {
   run: WorkflowRunDto
   tasks: TaskDto[]
   messages: AgentMessageDto[]
+  /** 节点耗时明细；历史 run 没有这张表的数据时是空数组（不是 404） */
+  nodes?: NodeRecordDto[]
+  node_summary?: NodeSummaryDto | null
 }
 
 /** GET /api/runs */
@@ -365,6 +368,72 @@ export type WorkflowRunDto = {
   started_at: string | null
   finished_at: string | null
   created_at: string | null
+}
+
+/** GET /api/runs/{id}/nodes —— 引擎落库的节点耗时（B 的 workflow_node_records） */
+export type NodeRecordDto = {
+  node_id: string
+  node_type: string
+  name: string
+  status: string
+  /** 第几轮；主链首验是 1，Self-Loop 回跳的节点是 2 */
+  round_no: number
+  duration_ms: number
+  degraded: boolean
+  tokens_in: number
+  tokens_out: number
+  tool_calls: { name?: string; status?: string }[]
+  error?: string | null
+}
+
+export type NodeSummaryDto = {
+  node_count: number
+  duration_ms: number
+  slowest: { node_id: string; name: string; duration_ms: number } | null
+  /** Self-Loop 聚合耗时（包住 修正→执行→渗透→复验），别当单节点比 */
+  loop: { node_id: string; name: string; duration_ms: number } | null
+  degraded_count: number
+  failed_count: number
+}
+
+/** GET /api/runs/{id}/rounds —— 与报告 Markdown 同源的轮次视图 */
+export type RunRoundDto = {
+  round_no: number
+  /** 可能为 null（基线缺失）*/
+  baseline: number | null
+  measured: number
+  /** 0-100 */
+  achievement: number
+  /** 0-1（注意：验证记录接口是 0-100，这里是 0-1，适配层统一 ×100） */
+  confidence: number
+  verdict: string
+  target_low: number
+  target_high: number
+  /** 本轮浇水时长（秒），来自任务载荷；0/缺省 = 没记录 */
+  duration_s: number
+  /** 诊断文案（feedback_logs 的 failure_reason） */
+  note: string
+  conf_detail: VerificationRecordDto['conf_detail']
+}
+
+export type RunRoundsDto = {
+  run_id: number
+  wf_name: string
+  trigger: string
+  started_at: string
+  finished_at: string
+  /** success / failed / needs_human / unverified / running / pending */
+  outcome: string
+  rounds: RunRoundDto[]
+  timeline: { ts: string; name: string; event: string; status: string; duration_ms: number }[]
+  alerts: { level: string; message: string; source: string }[]
+  confidence_reasons: string[]
+  achievement_detail: {
+    target_low: number
+    target_high: number
+    over_irrigated: boolean
+    baseline_in_range: boolean
+  }
 }
 
 /** 后端 dag_json（`backend/app/workflow/dag.py` 校验的就是这个结构） */

@@ -2,8 +2,9 @@
 # 用法：cp .env.example .env  →  docker compose up -d  →  http://localhost:8000/docs
 #
 # 默认拉起 5 个服务：backend / mysql / redis / mosquitto / chroma
-# frontend（队友A）在 profiles: ui 里，等它的 Dockerfile 就绪后：
-#   docker compose --profile ui up -d
+# 需要控制台（队友A 的前端）时加 profile：
+#   docker compose --profile ui up -d      → http://localhost:5173
+# 前端镜像两段式构建（node 编译 → nginx 托管），nginx 负责把 /api、/ws 转给 backend。
 name: zhiqiu
 
 services:
@@ -136,7 +137,7 @@ services:
       retries: 12
       start_period: 40s
 
-  # ---------- 前端（队友A，未就绪时不影响其它服务）----------
+  # ---------- 前端控制台（队友A，profile=ui）----------
   frontend:
     profiles: ["ui"]
     build:
@@ -144,9 +145,11 @@ services:
     container_name: zhiqiu-frontend
     restart: unless-stopped
     ports:
-      - "5173:80"
+      # 宿主机 5173 与开发态 `npm run dev` 同端口，演示脚本不用改
+      - "${FRONTEND_HOST_PORT:-5173}:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
 
 volumes:
   mysql_data:

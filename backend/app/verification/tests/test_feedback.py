@@ -16,7 +16,7 @@ def test_gap_over_fifteen_splits():
         baseline=30.0, measured=38.0, target_low=55, target_high=65, duration_s=30,
     )
     assert correction.strategy == "split"
-    assert correction.duration_s == 20.1          # 30 × 0.67
+    assert correction.duration_s == 20.0          # 30 × 0.67 = 20.1 → 取整秒 20
     assert correction.times == 2
     assert correction.interval_s == 60
     assert correction.payload["action"] == "pump"

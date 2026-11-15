@@ -111,6 +111,7 @@ def verify(task_no: str, db: Session = Depends(get_db)) -> dict[str, Any]:
 @router.get("", summary="验证记录列表（红/黄/绿圆环的数据源）")
 def list_verifications(
     task_no: str | None = None,
+    run_id: int | None = Query(None, description="只取某次执行下的验证记录（报告页按轮次渲染）"),
     conclusion: str | None = Query(None, description="success / failed / needs_human"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
@@ -121,6 +122,8 @@ def list_verifications(
     conditions = []
     if task_no:
         conditions.append(Verification.task_no == task_no)
+    if run_id is not None:
+        conditions.append(Verification.run_id == run_id)
     if conclusion:
         conditions.append(Verification.conclusion == conclusion)
     for cond in conditions:

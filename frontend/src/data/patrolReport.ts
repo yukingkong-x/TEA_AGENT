@@ -132,6 +132,72 @@ export const patrolRuns: PatrolRun[] = [
   },
 ]
 
+/**
+ * 后端真实 run → 报告页结构。
+ *
+ * 数据源是 `GET /api/runs/{id}/rounds`（与导出 PDF 同一份 `_load_run`），
+ * 不是前端按验证记录自己拼：浇水时长在任务载荷里、诊断在 feedback_logs 里，
+ * 前端拼不出来，硬拼就会出现「页面 45 秒、PDF 19.9 秒」。
+ */
+export function runFromApi(view: {
+  run_id: number
+  wf_name: string
+  started_at: string
+  outcome: string
+  rounds: {
+    round_no: number
+    baseline: number | null
+    measured: number
+    achievement: number
+    confidence: number
+    verdict: string
+    duration_s: number
+    note: string
+    conf_detail: { data_quality?: number; rule_cross?: number; consistency?: number; reasons?: string[] } | null
+  }[]
+}): PatrolRun {
+  const rounds: PatrolRound[] = view.rounds.map((r, index) => {
+    const next = view.rounds[index + 1]
+    const missing = r.baseline === null
+    return {
+      round: r.round_no,
+      baseline: r.baseline,
+      measured: r.measured,
+      rate: r.achievement,
+      // 这个接口的 confidence 是 0-1，页面按 0-100 渲染
+      confidence: r.confidence * 100,
+      baselineMissing: missing,
+      durationS: r.duration_s,
+      detail: {
+        data_quality: r.conf_detail?.data_quality ?? 0,
+        rule_cross: r.conf_detail?.rule_cross ?? 0,
+        consistency: r.conf_detail?.consistency ?? 0,
+        reasons: r.conf_detail?.reasons ?? [],
+      },
+      // note 是 feedback_logs 的 failure_reason（「缺口 9.87% 在 15.0 以内，单次补灌 19.9s」），
+      // 没有就按结论给一句不带猜测的描述，别编一个不存在的诊断
+      diagnosis: r.note || (r.verdict === 'success'
+        ? `第 ${r.round_no} 轮验证通过，达成率 ${r.achievement.toFixed(2)}%。`
+        : `第 ${r.round_no} 轮未达标，达成率 ${r.achievement.toFixed(2)}%。`),
+      correction: r.verdict === 'success'
+        ? '不必再浇'
+        : r.verdict === 'needs_human'
+          ? '暂停闭环，转人工'
+          : next
+            // 修正动作已经发生：下一轮的实际浇水时长就是它的结果
+            ? `${next.duration_s > 0 ? `补灌 ${Math.round(next.duration_s)} 秒` : '重新执行一轮'}`
+            : '已用完修正轮次',
+    }
+  })
+  const started = view.started_at ? view.started_at.replace('T', ' ').slice(5, 16) : ''
+  return {
+    id: `run-${view.run_id}`,
+    name: `#${view.run_id} ${view.wf_name}${started ? ` · ${started}` : ''}`,
+    outcome: view.outcome as RunOutcome,
+    rounds,
+  }
+}
+
 /** 基线缺失 / 基线为 null 时达成率「算不出来」，不能写成 0% */
 export function formatAchievement(round: PatrolRound) {
   if (round.baselineMissing || round.baseline === null) return '算不出来（基线缺失）'

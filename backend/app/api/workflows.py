@@ -213,3 +213,19 @@ def get_run_nodes(run_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
     ensure_found(run, f"执行实例 {run_id}")
     nodes = node_records.load_run_nodes(run_id)
     return {"run_id": run_id, "items": nodes, "summary": node_records.summarize(nodes)}
+
+
+@router.get("/runs/{run_id}/rounds", summary="轮次视图（报告页数据源：结论 + 每轮证据）")
+def get_run_rounds(run_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """报告页不再用样例数据：结论、轮次、诊断、浇水时长全从这里来。
+
+    与 `POST /api/reports/generate` 生成的 Markdown 同源（都走 verification/wiring
+    的 `_load_run`），所以页面上看到的就是 PDF 里那份数字。
+    没有验证记录时 `outcome="unverified"`、`rounds=[]` —— 前端据此渲染
+    「未产生验证结果」，不要拿 run.status 反推「闭环成功」。
+    """
+    run = db.get(WorkflowRun, run_id)
+    ensure_found(run, f"执行实例 {run_id}")
+    from ..verification.wiring import load_run_view
+
+    return load_run_view(run_id)

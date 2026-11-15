@@ -22,7 +22,7 @@ const pages = [
       const el = document.getElementById('report-run');
       if (!el) return 'no-select';
       const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
-      setter.call(el, 'run-1003');
+      setter.call(el, 'sample:run-1003');
       el.dispatchEvent(new Event('change', { bubbles: true }));
       return el.value;
     })()`,
@@ -36,7 +36,7 @@ const pages = [
       const el = document.getElementById('report-run');
       if (!el) return 'no-select';
       const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
-      setter.call(el, 'run-1002');
+      setter.call(el, 'sample:run-1002');
       el.dispatchEvent(new Event('change', { bubbles: true }));
       return el.value;
     })()`,

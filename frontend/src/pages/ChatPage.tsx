@@ -106,8 +106,10 @@ function Message({ message }: { message: UiMessage }) {
           </p>
           {denied ? <p className="bg-[#F2F3F5] px-3 py-2 text-sm text-dim">⛔ 权限不足：send_device_cmd（已拦截）</p> : null}
         </div>
-        {message.calls?.map((call) => (
-          <ToolBlock key={call.name} call={call} />
+        {message.calls?.map((call, index) => (
+          // key 用「工具名+序号」：Self-Loop 两轮都会调 verify_result / send_device_cmd，
+          // 只用工具名会撞 key（React 控制台 warning，且第二块的展开状态会被沿用）
+          <ToolBlock key={`${call.name}-${index}`} call={call} />
         ))}
         {message.citations ? <CitationList citations={message.citations} /> : null}
       </div>

@@ -1,12 +1,24 @@
 import { useEffect, useRef } from 'react'
 import * as echarts from 'echarts'
-import { patrolRounds } from '../data/patrolReport'
+import type { PatrolRound } from '../data/patrolReport'
 
-const labels = ['浇水前', '第 1 轮', '第 2 轮']
-const points = [patrolRounds[0].baseline, patrolRounds[0].measured, patrolRounds[1].measured]
-
-export function ReportTrend() {
+/**
+ * 湿度轨迹：浇水前基线 → 每一轮复测。
+ *
+ * 以前这里写死样例的 38.5 → 45 → 57，报告页切到真实 run 时曲线还是那三个假点，
+ * 页面上数字和线对不上。现在按当前 run 的轮次算，Y 轴跟着数据缩放
+ * （真实基线可能 30 出头，两轮也可能都不到 55，写死 30–70 会把点压扁）。
+ */
+export function ReportTrend({ rounds }: { rounds: PatrolRound[] }) {
   const host = useRef<HTMLDivElement>(null)
+  const labels = ['浇水前', ...rounds.map((round) => `第 ${round.round} 轮`)]
+  const points = [rounds[0]?.baseline ?? null, ...rounds.map((round) => round.measured)]
+  const numeric = points.filter((value): value is number => typeof value === 'number' && Number.isFinite(value))
+  const min = Math.max(0, Math.floor(Math.min(...numeric, 55) - 5))
+  const max = Math.min(100, Math.ceil(Math.max(...numeric, 65) + 5))
+  const aria = points
+    .map((value, index) => `${labels[index]} ${value === null ? '未测到' : `${value.toFixed(1)}%`}`)
+    .join('，')
 
   useEffect(() => {
     const node = host.current
@@ -22,7 +34,7 @@ export function ReportTrend() {
         backgroundColor: '#FFFFFF',
         borderColor: '#E3EBE6',
         textStyle: { color: '#1D2129', fontFamily: 'PingFang SC, Noto Sans SC, sans-serif' },
-        valueFormatter: (value: number) => `${value.toFixed(1)}%`,
+        valueFormatter: (value: number) => `${Number(value).toFixed(1)}%`,
       },
       xAxis: {
         type: 'category',
@@ -34,8 +46,8 @@ export function ReportTrend() {
       },
       yAxis: {
         type: 'value',
-        min: 30,
-        max: 70,
+        min,
+        max,
         splitLine: { lineStyle: { color: '#E7EEE9' } },
         axisLabel: {
           color: '#86909C',
@@ -99,14 +111,8 @@ export function ReportTrend() {
       observer.disconnect()
       chart.dispose()
     }
-  }, [])
+    // 换 run / 换轮次要重画：只挂载一次的话切到两轮 run 曲线还是上一轮的
+  }, [aria, labels.join('|'), min, max])
 
-  return (
-    <div
-      ref={host}
-      className="chart-rise h-[280px] w-full"
-      role="img"
-      aria-label="土壤湿度从浇水前 38.5% 到第 1 轮 45.0%，再到第 2 轮 57.0%，落入目标 55% 到 65%"
-    />
-  )
+  return <div ref={host} className="chart-rise h-[280px] w-full" role="img" aria-label={`土壤湿度：${aria}`} />
 }

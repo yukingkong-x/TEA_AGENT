@@ -47,8 +47,9 @@ function SpeechPop({ data }: { data: FlowData }) {
   return (
     <NodeToolbar position={Position.Right} offset={12} className="max-w-[260px] rounded-card border border-line bg-panel px-3 py-2 text-left">
       <p className="text-sm leading-normal text-paper">{data.speech}</p>
-      {data.calls?.map((call) => (
-        <p key={call.name} className="mt-1 text-xs leading-normal text-mute">
+      {data.calls?.map((call, index) => (
+        // 同一轮里可能两次调同名工具（Self-Loop 重跑），只用名字会撞 key
+        <p key={`${call.name}-${index}`} className="mt-1 text-xs leading-normal text-mute">
           {call.name} · {call.detail}
         </p>
       ))}

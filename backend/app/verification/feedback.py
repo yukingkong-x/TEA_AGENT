@@ -58,7 +58,9 @@ def diagnose(
         )
 
     if gap > GAP_SPLIT:
-        duration = round(duration_s * SPLIT_FACTOR, 1)
+        # 整秒:设备层 `_clamp_params` 会把 duration_s 转成 int(硬件只认整秒),
+        # 这里给 20.1 的话执行时变 20、载荷里却仍写 20.1,报告两列自相矛盾。
+        duration = max(1.0, float(round(duration_s * SPLIT_FACTOR)))
         return Correction(
             strategy="split",
             reason=f"缺口 {gap}% 超过 {GAP_SPLIT}%,分 {SPLIT_TIMES} 次灌溉,单次 {duration}s、间隔 {SPLIT_INTERVAL}s",
@@ -70,7 +72,7 @@ def diagnose(
                      "baseline": measured},
         )
 
-    duration = round(TOPUP_BASE + max(0.0, gap), 1)
+    duration = max(1.0, float(round(TOPUP_BASE + max(0.0, gap))))
     return Correction(
         strategy="topup",
         reason=f"缺口 {gap}% 在 {GAP_SPLIT} 以内,单次补灌 {duration}s",
