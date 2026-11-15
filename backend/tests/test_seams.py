@@ -9,11 +9,18 @@ import pytest
 from app import seams
 
 
-def _fake_module(name: str, **attrs) -> types.ModuleType:
+def _fake_module(monkeypatch, name: str, **attrs) -> types.ModuleType:
+    """临时替换 sys.modules 里的模块。
+
+    必须走 monkeypatch：合成一支后 `app.workflow.service` / `app.verification.report`
+    是**真实存在**的模块，这时的伪造是「覆盖」而不是「新增」。直接 `sys.modules[name]=`
+    在用例结束后不还原，后面的引擎用例 `import app.verification.report` 拿到的是假模块
+    —— 12 个用例集体变红，而单跑 app 目录又是绿的，最难查的那类串味。
+    """
     mod = types.ModuleType(name)
     for key, value in attrs.items():
         setattr(mod, key, value)
-    sys.modules[name] = mod
+    monkeypatch.setitem(sys.modules, name, mod)
     return mod
 
 
@@ -79,14 +86,14 @@ def test_invoke_falls_back_to_positional_without_double_call():
     assert result == {"run_id": 1}
 
 
-def test_start_run_adapts_to_captain_signature():
-    _fake_module("app.workflow.service", start_run=lambda wf_id, trigger: {"run_id": 11})
+def test_start_run_adapts_to_captain_signature(monkeypatch):
+    _fake_module(monkeypatch, "app.workflow.service", start_run=lambda wf_id, trigger: {"run_id": 11})
     seams._status_cache = (0.0, {})
     assert seams.start_run(1, "manual") == {"run_id": 11}
 
 
-def test_generate_report_accepts_plain_int():
-    _fake_module("app.verification.report", generate_report=lambda run_id: 42)
+def test_generate_report_accepts_plain_int(monkeypatch):
+    _fake_module(monkeypatch, "app.verification.report", generate_report=lambda run_id: 42)
     seams._status_cache = (0.0, {})
     assert seams.generate_report(3) == 42
 
@@ -103,6 +110,6 @@ def test_validate_dag_degrades_when_engine_raises(monkeypatch):
     def boom(_dag):
         raise RuntimeError("引擎校验炸了")
 
-    _fake_module("app.workflow.engine", validate_dag=boom)
+    _fake_module(monkeypatch, "app.workflow.engine", validate_dag=boom)
     monkeypatch.setitem(seams._CANDIDATES, "validate_dag", (("app.workflow.engine", "validate_dag"),))
     assert seams.validate_dag({"nodes": []}) is None
