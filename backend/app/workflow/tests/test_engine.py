@@ -24,6 +24,22 @@ REPLIES = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _skip_node_records(monkeypatch):
+    """单测不碰数据库:`_drive` 的 finally 会把节点记录写进真实库。
+
+    这些用例的 `create_run` 是假 id(42 / 7 / 77),照写就是孤儿行 ——
+    run_id=42 的 13 行 0 耗时记录已经污染过一次本地库(清完又冒出来才发现)。
+    落库本身由 run #32 / #33 实测覆盖,这里只保证单测是纯内存的。
+    """
+    from app.workflow import engine as engine_mod
+
+    async def _noop(run_id, result):
+        return None
+
+    monkeypatch.setattr(engine_mod, "_persist_node_records", _noop, raising=False)
+
+
 class FakeRunner:
     def __init__(self, agent_key: str, calls: dict[str, int], replies: dict[str, str]):
         self.agent_key = agent_key
