@@ -223,3 +223,12 @@ __marimo__/
 node_modules/
 __pycache__/
 .pio/
+
+# 后端运行产物（队友B）
+backend/logs/
+backend/uploads/
+logs/
+*.log
+
+# AI 助手的工作区状态（各人本机，不入库）
+.workbuddy/
