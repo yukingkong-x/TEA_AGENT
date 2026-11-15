@@ -96,7 +96,7 @@ export function toDagJson(
 export function fromDagJson(dag: DagJson): { nodes: FlowNode[]; edges: Edge[] } {
   const nodes: FlowNode[] = []
   const edges: Edge[] = []
-  const pushEdge = (source: string, target: string, sourceHandle?: string) => {
+  const pushEdge = (source: string, target: string, sourceHandle?: string, label?: string) => {
     if (!target) return
     edges.push({
       id: `${source}->${target}${sourceHandle ? `:${sourceHandle}` : ''}`,
@@ -104,7 +104,9 @@ export function fromDagJson(dag: DagJson): { nodes: FlowNode[]; edges: Edge[] } 
       target,
       type: 'flow',
       sourceHandle,
-      data: { active: false },
+      label,
+      // back 边是 Self-Loop 的回流路径，画成常显虚线，和主链区分开
+      data: { active: false, back: sourceHandle === LOOP_BACK },
     } as Edge)
   }
 
@@ -134,7 +136,9 @@ export function fromDagJson(dag: DagJson): { nodes: FlowNode[]; edges: Edge[] } 
     } else if (kind === 'parallel') {
       for (const target of asArray(dagNode.branches as string | string[])) pushEdge(dagNode.id, target)
     } else if (kind === 'loop') {
-      if (dagNode.body_next) pushEdge(dagNode.id, dagNode.body_next, LOOP_BACK)
+      // body_next 指哪就画哪：库里的 Self-Loop 回边指向 n9（重新建单再执行），
+      // 前端不许再写死目标，否则后端改了 DAG 画布还是旧箭头
+      if (dagNode.body_next) pushEdge(dagNode.id, dagNode.body_next, LOOP_BACK, '未达标 · 重新建单')
       for (const target of asArray(dagNode.next)) pushEdge(dagNode.id, target)
     } else {
       for (const target of asArray(dagNode.next)) pushEdge(dagNode.id, target)

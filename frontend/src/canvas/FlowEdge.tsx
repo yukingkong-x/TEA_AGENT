@@ -20,6 +20,8 @@ export function FlowEdge({
     targetPosition,
   })
   const active = Boolean((data as { active?: boolean } | undefined)?.active)
+  // Self-Loop 回边常显虚线：主链是实线，回流路径一眼分得清（PRD 9.1 的 loop 语义）
+  const back = Boolean((data as { back?: boolean } | undefined)?.back)
   const reduce =
     typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
@@ -29,9 +31,9 @@ export function FlowEdge({
         path={path}
         markerEnd={markerEnd}
         style={{
-          stroke: active ? '#1F7A45' : '#86909C',
+          stroke: active ? '#1F7A45' : back ? '#5A6474' : '#86909C',
           strokeWidth: active ? 2 : 1.25,
-          strokeDasharray: active ? '7 5' : undefined,
+          strokeDasharray: active ? '7 5' : back ? '6 4' : undefined,
         }}
         className={active && !reduce ? 'edge-flow' : undefined}
       />

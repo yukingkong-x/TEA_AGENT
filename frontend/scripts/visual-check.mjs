@@ -10,7 +10,7 @@ const BASE = 'http://localhost:5173'
 
 const pages = [
   { path: '/', grep: ['在线设备', '土壤湿度'] },
-  { path: '/canvas', grep: ['保存', '运行'] },
+  { path: '/canvas', grep: ['保存', '运行', '重新建单'] },
   { path: '/tasks', grep: ['任务号'] },
   { path: '/report', grep: ['基线', '复测', '浇水时长'] },
   // outcome=unverified 那一档：切到没有验证记录的 run，页面必须显示「未产生验证结果」
@@ -23,6 +23,20 @@ const pages = [
       if (!el) return 'no-select';
       const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
       setter.call(el, 'run-1003');
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return el.value;
+    })()`,
+  },
+  // outcome=needs_human 那一档：转人工必须说清「不再自动重试」，不能当失败
+  {
+    path: '/report',
+    name: 'report_needs_human',
+    grep: ['🚨 转人工', '不再自动重试', '不会'],
+    after: `(() => {
+      const el = document.getElementById('report-run');
+      if (!el) return 'no-select';
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
+      setter.call(el, 'run-1002');
       el.dispatchEvent(new Event('change', { bubbles: true }));
       return el.value;
     })()`,

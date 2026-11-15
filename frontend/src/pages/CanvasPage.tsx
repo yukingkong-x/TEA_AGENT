@@ -11,6 +11,7 @@ import {
   useNodesState,
   useReactFlow,
   type Connection,
+  type Edge,
   type OnSelectionChangeParams,
 } from '@xyflow/react'
 import { useLocation } from 'react-router-dom'
@@ -33,6 +34,18 @@ import {
 } from '../data/workflow'
 
 const edgeTypes = { flow: FlowEdge }
+
+/**
+ * Self-Loop 的 body 入口（dag_json.body_next 指向的节点）。
+ * 一轮修正会把 body 整段重走（n9 建单 → n10 渗透 → n11 复验），
+ * 所以轮次只能按「回到入口」计，不能按「节点重复」计。
+ */
+function resolveBodyEntry(nodes: FlowNode[], edges: Edge[]): string | null {
+  const loop = nodes.find((item) => item.data.kind === 'loop')
+  if (!loop) return null
+  const back = edges.find((edge) => edge.source === loop.id && edge.sourceHandle === 'back')
+  return back?.target ?? null
+}
 
 function formatTimer(total: number) {
   const minutes = Math.floor(total / 60)
@@ -100,7 +113,7 @@ function CanvasEditor() {
   const [pickerOpen, setPickerOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null)
-  const visited = useRef<Set<string>>(new Set())
+  const bodyEntry = useRef<string | null>(null)
   const armed = useRef(Boolean((location.state as { arm?: boolean } | null)?.arm))
   const followed = useRef('')
   const paneRef = useRef<HTMLDivElement>(null)
@@ -175,7 +188,6 @@ function CanvasEditor() {
     }
     setBusy('run')
     setError(null)
-    visited.current = new Set()
     followed.current = ''
     setRound(0)
     setElapsed(0)
@@ -208,6 +220,10 @@ function CanvasEditor() {
   }, [busy, startRun, wfId])
 
   useEffect(() => {
+    bodyEntry.current = resolveBodyEntry(nodes, edges)
+  }, [edges, nodes])
+
+  useEffect(() => {
     if (phase !== 'running') return
     const timer = window.setInterval(() => setElapsed((value) => value + 1), 1000)
     return () => window.clearInterval(timer)
@@ -219,9 +235,13 @@ function CanvasEditor() {
       if (!data?.node_id) return
       if (runId && data.run_id !== runId) return
       if (data.state === 'started') {
-        // Self-Loop 会让同一个 node_id 再来一次 —— 按到达顺序播，不去重，只用来数轮次
-        if (visited.current.has(data.node_id)) setRound((value) => Math.max(1, value) + 1)
-        else visited.current.add(data.node_id)
+        // Self-Loop 一轮会把 body 整段重走（n9 → n10 → n11 都会再 started 一次），
+        // 只有再次回到 body 入口才是新的一轮；按「节点重复」计会把 1 轮算成 3 轮。
+        if (bodyEntry.current && data.node_id === bodyEntry.current) {
+          setRound((value) => Math.max(1, value) + 1)
+        }
+        // 走到 loop 节点说明主链首验已经做完，至少是第 1 轮
+        if (data.node_type === 'loop') setRound((value) => (value === 0 ? 1 : value))
       }
       setNodes((current) => applyNodeEvent(current, data))
     })
