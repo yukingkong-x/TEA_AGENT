@@ -244,3 +244,6 @@ backend/data/
 # 本地缓存与截图（审阅工具产物，队友A）
 .npm-cache/
 shots/
+
+# 固件本地配置（含 WiFi 密码，永不入库；模板见 firmware/config.h.example，队友C）
+firmware/*/include/config.h

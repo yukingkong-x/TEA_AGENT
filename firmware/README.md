@@ -47,7 +47,7 @@
 
 ## 今天第一步（D7 就干这个）
 
-1. PlatformIO 装好 → 打开 `firmware/k10_field` → 填 `wifi_config.h`（WiFi 名称/密码 + 电脑局域网 IP）
+1. PlatformIO 装好 → 打开 `firmware/k10_field` → 编辑 `include/config.h`（WiFi 名称/密码 + 电脑局域网 IP；该文件含密码**不入库**，模板见 `firmware/config.h.example`，新环境复制一份再填）
 2. USB 连板 → Upload（K10 报错就按住 BOOT 进下载模式）→ 串口监视器看到 "MQTT connected"
 3. MQTTX 连 Broker（1883，账号见 .env）→ 订阅 `tea/device/#` → 看到心跳和遥测，D7 就达标了
 
