@@ -85,6 +85,41 @@ def _resolve_target(db: Session, device_id: str, roles: set[str]) -> Any:
     return device_match.match(device_id, rows, role=role, prefer_mock=get_mode() == "mock")
 
 
+def _task_payload(task: Any) -> dict[str, Any]:
+    payload = getattr(task, "payload_json", None)
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
+def _task_params(task: Any) -> dict[str, Any]:
+    params = _task_payload(task).get("params")
+    return dict(params) if isinstance(params, dict) else {}
+
+
+def _merge_task_params(
+    task: Any, caller_params: dict[str, Any] | None
+) -> tuple[dict[str, Any], list[str]]:
+    """任务载荷优先，调用方参数只作缺省。返回 (合并后参数, 被载荷覆盖的键)。
+
+    现场事故（2026-11-14）：修正任务按缺口算出 `duration_s=19.9` 写进载荷，执行管家
+    按提示词传了 45，`send_cmd` 用的是调用方那个 → 实浇 45 秒。多浇的 25 秒白费水还是
+    小事，验证时湿度涨得更多、达成率反而更"漂亮"，等于用错数据奖励自己。反过来
+    （载荷 45、调用方 19.9）会浇不够，第二轮又 failed。
+
+    所以载荷是**约定**、调用方是**缺省**：载荷里有的键一律用载荷，调用方只在载荷
+    缺该键时才补。这样任何调用方（执行管家、调度器、手动重发、以后新写的代码）都不会
+    再把载荷里的时长盖掉，不用每个入口各写一遍兜底。
+    """
+    merged = dict(caller_params or {})
+    if task is None:
+        return merged, []
+    from_task = _task_params(task)
+    if not from_task:
+        return merged, []
+    overridden = sorted(key for key, value in from_task.items() if key in merged and merged[key] != value)
+    merged.update(from_task)
+    return merged, overridden
+
+
 def send_cmd(
     db: Session,
     device_id: str,
@@ -103,6 +138,19 @@ def send_cmd(
         raise ValueError(f"不支持的 action: {action}（全集 {sorted(ACTIONS)}）")
 
     allowed_roles = ROLE_ACTIONS.get(action, set())
+    # 先取任务：载荷里的 params / device_id 是这张单的约定，后面一律以它为准。
+    task = None
+    prev_status: str | None = None
+    if task_no:
+        task = db.scalar(select(Task).where(Task.task_no == task_no))
+    task_payload = _task_payload(task)
+    from_task_device = str(task_payload.get("device_id") or "").strip()
+    if from_task_device and from_task_device != device_id:
+        # 同一张单换设备 = 换了执行终端，复测却还去查原设备，验证结论会莫名其妙。
+        # 要换设备就该新建一张单，而不是复用 task_no。
+        logger.info("任务 {} 载荷设备优先：{!r} 取代调用方 {!r}", task_no, from_task_device, device_id)
+        device_id = from_task_device
+
     # 下发侧同样要解析指代：决策文本里写的是「A区浇水」，执行管家照着传 device_id="A区"，
     # 精确匹配落空后 ensure_device 会凭空登记一台 role 猜出来的设备并把指令发到不存在的
     # 客户端，ack 永远等不到 → 任务超时 → 演示看起来像"指令发了但设备没反应"。
@@ -114,11 +162,12 @@ def send_cmd(
     if allowed_roles and device.role not in allowed_roles:
         raise ValueError(f"设备 {device_id}（role={device.role}）不支持 action={action}")
 
+    # 合并必须在 clamp 之前：否则调用方那个 45 会先被当成"请求值"截断，载荷 19.9 永远用不上。
+    params, overridden = _merge_task_params(task, params)
+    params_source = "task" if _task_params(task) else "caller"
+    if overridden:
+        logger.info("任务 {} 载荷优先，覆盖调用方参数：{}", task_no or "(新建)", ", ".join(overridden))
     params, clamped = _clamp_params(action, params)
-    task = None
-    prev_status: str | None = None
-    if task_no:
-        task = db.scalar(select(Task).where(Task.task_no == task_no))
     if task is None:
         task_no = task_no or ids.new_task_no()
         task = Task(
@@ -139,6 +188,14 @@ def send_cmd(
         prev_status = task.status
         task.status = "dispatched"
         task.assigned_device = device_id
+        # 回写载荷：clamp 可能把 500 截成 120，不写回的话下次复用这张单又按 500 算，
+        # 轨迹里"载荷值"和"实发值"也会长期对不上。整体赋值是因为 JSON 列不追踪原地修改。
+        if task_payload:
+            task_payload["params"] = params
+            task_payload["device_id"] = device.device_id
+            if not task_payload.get("action"):
+                task_payload["action"] = action
+            task.payload_json = task_payload
 
     # 轨迹与状态变更同一个事务：跟着下面那次 commit 一起落地。
     # 新任务的 from 是 None（建出来就是 dispatched，从没落过 pending），
@@ -157,7 +214,13 @@ def send_cmd(
         actor="human" if issued_by.endswith("manual") else "scheduler",
         run_id=task.run_id,
         event="dispatch",
-        payload={"action": action, "params": params, "device_id": device_id, "clamped": clamped},
+        payload={
+            "action": action, "params": params, "device_id": device_id, "clamped": clamped,
+            # params_source=task 表示这次发的是载荷里的约定值；caller 表示载荷没有该字段、
+            # 用了调用方给的缺省。overridden 列出被载荷盖掉的键，对账时一眼能看出
+            # 「调用方要 45、实际发了 19.9」到底发生在哪一跳。
+            "params_source": params_source, "overridden": overridden,
+        },
     )
 
     # 必须先 commit 再 publish，不能只 flush：
