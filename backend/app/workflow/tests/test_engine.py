@@ -685,6 +685,29 @@ def test_self_loop_creates_correction_task_from_verification_plan():
     assert feedbacks[0]["from_task_no"] == "task-20261114-0019"
     assert feedbacks[0]["to_task_no"]
 
+    # 修正轮重跑的节点要带第 2 轮标记(节点耗时表按它分组,否则前端只能显示「第 0 轮」)
+    records = {r.node_id: r for r in result.nodes}
+    assert records["n9"].round_no == 2
+    assert records["n11"].round_no == 2
+    assert records["n2"].round_no == 1          # 巡园只跑过一次,仍是第 1 轮
+    # loop 节点的耗时是包住整个 body 的聚合,轮次按结束时记(它覆盖到了第 2 轮)
+    assert records["n11b"].round_no == 2
+
+
+def test_node_records_skip_branches_that_never_ran():
+    """节点耗时表只落真跑过的节点:`result.nodes` 起跑就按整张 DAG 建齐。
+
+    全落进去的话,决策=irrigate 的 run 时间线里会多一条「待执行」的「无需作业归档」,
+    汇总的节点数也会比画布上动过的多一个。这条单测盯的就是那个 pending 过滤器。
+    """
+    harness = Harness()                          # 默认回复 success → 只跑一轮
+    result = harness.run()
+
+    records = {r.node_id: r for r in result.nodes}
+    assert records["n12"].status == "pending"    # 归档分支没走到
+    assert records["n9"].status == "done"
+    assert all(r.round_no == 1 for r in result.nodes if r.status != "pending")
+
 
 def test_executor_sends_the_duration_the_decision_created():
     """执行管家不能自己报一个时长:run #30 实测载荷 45s、设备真浇 60s。

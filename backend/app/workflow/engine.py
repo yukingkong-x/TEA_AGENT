@@ -82,6 +82,10 @@ class NodeRecord:
     tokens_in: int = 0
     tokens_out: int = 0
     duration_ms: int = 0
+    # 这条记录发生在第几轮(主链首验=1,Self-Loop 回跳的 body=2)。
+    # 节点耗时表按它分组:不写的话,除 loop 节点外全是 0,前端只能显示「第 0 轮」。
+    # 注意 by_id 按 node_id 去重,重跑的节点只留最后一轮的耗时(见 core/node_records 文档)。
+    round_no: int = 0
 
 
 @dataclass
@@ -270,6 +274,36 @@ def _release_run_id(token) -> None:
         pass
 
 
+async def _persist_node_records(run_id: Optional[int], result: Optional["RunResult"]) -> None:
+    """把一次 run 的节点耗时落进 workflow_node_records(PRD 9.1 报告时间线)。
+
+    为什么不能拿 task_events 顶:那条线挂在 task_no 上,决策=none 的巡园 run
+    一条都没有;而且 start/condition/loop/tool 这些节点根本不发消息,却正好
+    占着时间线的头尾和那 90 秒渗透等待。
+
+    只落状态不是 pending 的节点:`result.nodes` 起跑时按整张 DAG 建齐(13 条),
+    没走到的分支(决策=none 时的浇水/渗透)停在 pending。全落进去,报告时间线
+    会多出「待执行」的幽灵行,汇总的节点数也和实际跑的对不上。
+
+    记账失败绝不能把一次成功的 run 打成失败,所以整段吞异常(core/node_records 同约定)。
+    """
+    if not run_id or result is None:
+        return
+    executed = [r for r in (result.nodes or []) if r.status != "pending"]
+    if not executed:
+        return
+    try:
+        from app.core import node_records  # 基座模块;本分支不单独依赖它
+    except Exception as exc:  # noqa: BLE001 未合入基座时不该炸
+        logger.warning("节点记录模块不可用,run {} 的耗时表未落库:{}", run_id, exc)
+        return
+    try:
+        added = await asyncio.to_thread(node_records.record_run_nodes, run_id, executed)
+        logger.debug("run {} 节点记录落库 {} 条", run_id, added)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("run {} 节点记录落库失败:{}", run_id, exc)
+
+
 class WorkflowEngine:
     """按 DAG 顺序驱动节点;parallel 扇出、loop 循环、condition 分流。"""
 
@@ -291,6 +325,9 @@ class WorkflowEngine:
         self.max_steps = max_steps
         # 当前停留节点,供外层超时兜底报告「卡在哪」(run 24 卡死时无从下手)
         self.current_node = ""
+        # 最后一次 run 的结果。正常路径由 run() 返回,但 wait_for 超时会取消协程、
+        # 拿不到返回值 —— 那时节点耗时表只能从这份留底里取(见 start_run 的 _drive)。
+        self.last_result: Optional[RunResult] = None
 
     # ── 事件 ──
     def _fire(self, event: dict) -> None:
@@ -373,6 +410,7 @@ class WorkflowEngine:
             _release_executor_device(device_token)
             result.context = context
             result.duration_ms = int((time.monotonic() - started) * 1000)
+            self.last_result = result
             self._fire({
                 "type": "run_finished", "run_id": run_id, "status": result.status,
                 "rounds": context.get("round", 0), "duration_ms": result.duration_ms,
@@ -403,6 +441,9 @@ class WorkflowEngine:
                 raise WorkflowError(f"节点 {node_id} 不存在")
             record = by_id[node_id]
             node_type = node.get("type")
+            # 轮次:主链首验算第 1 轮(此时 context.round 还是 0),loop 回跳的
+            # body 已经 +1 变成第 2 轮。节点耗时表靠它分组。
+            record.round_no = max(1, int(context.get("round") or 0))
 
             if node_type == "end":
                 record.status = "running"
@@ -545,6 +586,10 @@ class WorkflowEngine:
                     await self._apply_correction(node_id, record, context)
                     await self._walk(body, nodes, by_id, context, result, stop_at=node_id, steps=steps)
                 record.output = f"rounds={rounds}"
+                # loop 节点的耗时是**包住整个 body 的聚合**(实测 run #33:99.7s),
+                # 它本身只做一次表达式求值。轮次按结束时的轮次记,否则这条最慢记录
+                # 会顶着一个「第 1 轮」的徽章,而它覆盖的其实是两轮。
+                record.round_no = max(1, int(context.get("round") or 1))
                 record.status = "done"
                 return self._first(node.get("next"))
 
@@ -847,15 +892,16 @@ def start_run(wf_id: int, trigger: str = "manual") -> int:
         # run_id 跟着上下文走:create_task / send_cmd 在工具层与设备层落库时读它,
         # 不靠基座「唯一 running 才认」的兜底(并发跑两条就记 NULL)。
         run_token = _bind_run_id(run_id)
+        run_result: Optional[RunResult] = None
         try:
             # 兜底超时:节点里任何一次 await 不回来(限流退避、工具卡死、MQTT 失联),
             # run 就会永远挂在 running,前端只能一直转圈,演示当场死掉。
             # 超时后标记 failed 并写明最后节点,至少是「明确失败」而不是「假装进行中」。
-            result = await asyncio.wait_for(
+            run_result = await asyncio.wait_for(
                 engine.run(dag, run_id=run_id, trigger=trigger, init_context=init_context),
                 timeout=RUN_TIMEOUT_S,
             )
-            _deps.update_run(run_id, result.status, result.context, result.error)
+            _deps.update_run(run_id, run_result.status, run_result.context, run_result.error)
         except asyncio.TimeoutError:
             logger.error("run {} 超过 {}s 未结束,最后停留节点 {}", run_id, RUN_TIMEOUT_S,
                          engine.current_node or "未知")
@@ -864,6 +910,10 @@ def start_run(wf_id: int, trigger: str = "manual") -> int:
         except Exception as exc:  # noqa: BLE001 后台任务异常必须落到 run 记录
             _deps.update_run(run_id, "failed", {}, f"{type(exc).__name__}: {exc}")
         finally:
+            # 节点耗时表(PRD 9.1)。放 finally:失败的 run 也要有耗时 —— 「熔断」
+            # 那条演示线正是靠它说明「停在哪个节点、卡了多久」。
+            # 超时/异常时 wait_for 没交付 result,退回引擎自己留住的那份(见 run 的 finally)。
+            await _persist_node_records(run_id, run_result or engine.last_result)
             _release_run_id(run_token)
 
     try:
