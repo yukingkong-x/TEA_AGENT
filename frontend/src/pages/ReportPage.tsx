@@ -10,6 +10,7 @@ import {
   outcomeLabel,
   patrolRuns,
   type PatrolRound,
+  type RunOutcome,
 } from '../data/patrolReport'
 import { CONFIDENCE_WEIGHTS, NEEDS_HUMAN_THRESHOLD, pct, raw01, weightedConfidence } from '../lib/units'
 
@@ -56,6 +57,16 @@ export function ReportPage() {
           </p>
         </div>
 
+        {run.outcome === 'needs_human' ? (
+          // 转人工不是失败：系统已经停手，不会自动重试、不会再下发设备指令
+          <section className="rounded-2xl border border-[#DCCBFF] bg-[#F7F2FF] px-5 py-4">
+            <h2 className="text-paper">🚨 已转人工，系统不再自动重试</h2>
+            <p className="mt-2 max-w-[64ch] text-sm leading-relaxed text-dim">
+              置信度低于 60% 或 Self-Loop 轮次已用完，系统已停在最后一轮。这里<strong className="font-semibold text-paper">不会</strong>再排修正任务、不会再下发浇水指令，也不按「失败」重跑——请人工核对传感器读数与设备状态，确认后手动复测。
+            </p>
+          </section>
+        ) : null}
+
         {latest ? (
           <div className="grid items-stretch gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
             <section className="rounded-2xl bg-[#F7F8FA] px-4 py-4">
@@ -89,7 +100,12 @@ export function ReportPage() {
 
         {run.rounds.map((round, index) => (
           // round_no 由后端任务载荷决定，两轮理论上不会重号，但补 index 兜底
-          <RoundBlock key={`${round.round}-${index}`} round={round} />
+          <RoundBlock
+            key={`${round.round}-${index}`}
+            round={round}
+            isFinal={index === run.rounds.length - 1}
+            runOutcome={run.outcome}
+          />
         ))}
 
         <section className="rounded-2xl bg-[#F7F8FA] px-5 py-4">
@@ -177,9 +193,19 @@ function RateRing({ rate, color, missing }: { rate: number; color: string; missi
   )
 }
 
-function RoundBlock({ round }: { round: PatrolRound }) {
+function RoundBlock({
+  round,
+  isFinal,
+  runOutcome,
+}: {
+  round: PatrolRound
+  isFinal?: boolean
+  runOutcome?: RunOutcome
+}) {
   // 置信度是 0-100，阈值 60 直接比，别拿 0.6 比
-  const handedOff = round.confidence < NEEDS_HUMAN_THRESHOLD
+  // 整体转人工时最后一轮也标「转人工」：否则整页写转人工、这一行却写「未达标」，自相矛盾
+  const handedOff =
+    round.confidence < NEEDS_HUMAN_THRESHOLD || (Boolean(isFinal) && runOutcome === 'needs_human')
   // 基线缺失时达成率「算不出来」，不能当成未达标/闭环来判
   const missing = Boolean(round.baselineMissing) || round.baseline === null
   const closed = !missing && round.rate >= 60

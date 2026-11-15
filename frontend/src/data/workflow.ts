@@ -20,7 +20,7 @@ export type FlowData = {
 }
 
 export type FlowNode = Node<FlowData>
-type FlowEdge = Edge<{ active?: boolean }>
+type FlowEdge = Edge<{ active?: boolean; back?: boolean }>
 
 const LAYOUT_KEY = 'zhiqiu.canvas.layout.v2'
 const LEGACY_LAYOUT_KEY = 'zhiqiu.canvas.layout'
@@ -114,7 +114,8 @@ export function defaultNodes(): FlowNode[] {
     node('n11b', 'loop', { x: 320, y: 1400 }, {
       name: 'Self-Loop',
       maxIterations: 2,
-      expression: "context.last_verification == 'success' or context.round > 2",
+      // 与后端 dag_json v2 一致：max_iterations 是**总轮次**上限，round 由 loop 节点维护
+      expression: "context.last_verification == 'success' or context.round >= 2",
     }),
     node('n13', 'end', { x: mid + 76, y: 1600 }, { name: '结束' }),
   ]
@@ -151,8 +152,16 @@ export function defaultEdges(): FlowEdge[] {
     // PRD 9.1 修订：n11 → n11b → n13。n11 只能有一条出边（进 loop 节点），
     // 否则 dag_json 里 n11.next 到底指谁说不清，loop 节点也会变成孤儿。
     link('e14', 'n11b', 'n13', { label: '达标' }),
-    link('e15', 'n11', 'n11b', { sourceHandle: 'loop', label: '未达标' }),
-    link('e16', 'n11b', 'n11', { sourceHandle: 'back', targetHandle: 'again', label: '再验证' }),
+    // n11 的右侧 loop/again 两个 handle 是同一对出入口：进去判定，判定不过从右侧回来
+    link('e15', 'n11', 'n11b', { sourceHandle: 'loop', label: '判定' }),
+    // 回边指向「执行浇水」（n9）而不是「验证审计」（n11）：修正轮要重新建单并再执行，
+    // 只回 n11 等于拿同一批数据反复复测（后端 body_next 同样是 n9）
+    link('e16', 'n11b', 'n9', {
+      sourceHandle: 'back',
+      label: '未达标 · 重新建单',
+      // back 边画虚线（与从后端 dag_json 载入时的 data.back 保持一致）
+      data: { active: false, back: true },
+    }),
     link('e17', 'n12', 'n13'),
   ]
 }

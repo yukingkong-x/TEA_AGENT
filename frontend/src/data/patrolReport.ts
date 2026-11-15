@@ -157,7 +157,7 @@ export function outcomeSummary(run: PatrolRun) {
     case 'failed':
       return '达成率低于 60%，已触发修正任务（Self-Loop）。'
     case 'needs_human':
-      return '置信度低于 60%，本轮挂起，转人工。'
+      return '已转人工：置信度不足或 Self-Loop 轮次已用完，系统停止自动修正与重试，需人工核对读数与设备状态后再复测。'
     case 'unverified':
       return '本次运行没有产生验证记录，无法判定是否达标——流程跑通不等于浇水达标，不能算作一次成功的闭环。'
     case 'running':
