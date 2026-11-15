@@ -14,7 +14,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
+# 只忽略仓库根目录的 lib/（Python venv），别把 frontend/src/lib/ 一起吞了
+/lib/
 lib64/
 parts/
 sdist/
@@ -223,7 +224,6 @@ __marimo__/
 node_modules/
 __pycache__/
 .pio/
-
 # 后端运行产物（队友B）
 backend/logs/
 backend/uploads/
@@ -240,3 +240,7 @@ backend/data/
 
 # AI 助手的工作区状态（各人本机，不入库）
 .workbuddy/
+
+# 本地缓存与截图（审阅工具产物，队友A）
+.npm-cache/
+shots/
