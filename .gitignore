@@ -230,5 +230,13 @@ backend/uploads/
 logs/
 *.log
 
+# 项目运行时产物（PRD 18:这些目录/文件永远不进仓库）
+uploads/
+chroma_data/
+mysql_data/
+data/knowledge/
+backend/data/
+*.key
+
 # AI 助手的工作区状态（各人本机，不入库）
 .workbuddy/
