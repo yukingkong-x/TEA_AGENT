@@ -777,8 +777,8 @@ WebSocket 推送消息统一格式：`{"type": "telemetry", "data": {...}, "ts":
       "next": ["n11b"] },
     { "id": "n11b", "type": "loop", "name": "Self-Loop",
       "max_iterations": 2,
-      "exit_expression": "context.last_verification == 'success' or context.round > 2",
-      "body_next": "n11", "next": ["n13"] },
+      "exit_expression": "context.last_verification == 'success' or context.round >= 2",
+      "body_next": "n9", "next": ["n13"] },
     { "id": "n12", "type": "agent", "agent_key": "verifier", "name": "无需作业归档",
       "input": "本轮决策为暂不作业，生成简要记录。", "next": ["n13"] },
     { "id": "n13", "type": "end", "name": "结束" }
@@ -787,9 +787,13 @@ WebSocket 推送消息统一格式：`{"type": "telemetry", "data": {...}, "ts":
 }
 ```
 
-> 上例为**默认工作流全文**，首次启动写入 workflows 表。Self-Loop 以 `loop` 节点实现：验证未达标 → feedback 引擎生成修正任务 → executor 再执行 → verifier 再验证，最多 2 轮（`max_iterations` 可配）。画布坐标存于节点 `position: {x, y}` 字段（此处省略，画布保存时自动写入）。
+> 上例为**默认工作流全文**，首次启动写入 workflows 表。Self-Loop 以 `loop` 节点（`n11b`）实现，**先判后循环**：主链上的 `n11` 是首验（计第 1 轮），进入 `n11b` 先求值 `exit_expression`——首验已达 `success` 就直接走 `n13`，`body` 一次都不跑；未达标（或表达式依赖的字段暂时缺失，按未达标处理）时，引擎按验证层已算好的 `correction`（`split` / `topup` / `suspect_data`）落一张新任务（`trigger=selfloop`，带 `device_id`）并写 `feedback_logs`，再按 `body_next` 回到 `n9`，走「执行管家领修正单 → 渗透等待 → 复测验证」。
 >
-> 连线约定：**边只由节点上的 `next` / `branches` / `body_next` 显式声明，`edges` 恒为空数组**，不得用于表达拓扑（画布存布局即可，不要往这里写说明文字，否则 JSON 不合法）。`n11 → n11b → n13` 是 Self-Loop 的入口与出口：验证完进 loop 判定，达标走 `n13`，不达标由 loop 按 `body_next` 回到 `n11` 重验，因此 `n11b` 必须被 `n11` 指向，否则可达性校验会判它为孤儿节点。
+> `max_iterations` 是**总轮次**上限（默认 2，可配），与 `exit_expression` 里的 `context.round >= 2` 同口径：主链首验 1 轮 + 修正后 1 轮 = 最多 2 次验证、最多 1 次修正；跑满仍不达标按 11.4.3 转人工。**不取「2 次修正 / 3 次验证」**：第 3 轮的修正单会被建出来却没人执行，库里留一张会真浇水的孤儿单，报告也无法自证「修正后的结果」。
+>
+> 修正任务由引擎（`_apply_correction`）建，`loop` 节点只负责判定与回跳，不生成任务；`verifier` 的职责是用 `verify_result` 给出结论与修正方案。画布事件按到达顺序播放，`n11` 同一节点会出现两次（第 1 轮、第 2 轮），轮次徽章按 `context.round` 计。画布坐标存于节点 `position: {x, y}` 字段（此处省略，画布保存时自动写入）。
+>
+> 连线约定：**边只由节点上的 `next` / `branches` / `body_next` 显式声明，`edges` 恒为空数组**，不得用于表达拓扑（画布存布局即可，不要往这里写说明文字，否则 JSON 不合法）。`n11 → n11b → n13` 是 Self-Loop 的入口与出口：验证完进 loop 判定，达标走 `n13`，不达标由 loop 按 `body_next` 回到 `n9` 重新「执行 → 渗透 → 复测」（**不是回 `n11` 原地重验**——那样三轮验的是同一批读数，物理世界一动不动）。因此 `n11b` 必须被 `n11` 指向，否则可达性校验会判它为孤儿节点。
 
 ## 9.2 节点类型语义（nodes.py 实现依据）
 
@@ -911,8 +915,8 @@ confidence = 0.5 × 数据质量分 + 0.3 × 规则交叉分 + 0.2 × 一致性�
    - 缺口 = L − M；若缺口 >15 → 策略 `split`（分次灌溉，duration=原时长×0.67，2 次，间隔 60s）
    - 若 0 < 缺口 ≤15 → 策略 `topup`（单次补灌 duration=10+缺口 s）
    - 若 M ≤ B（浇了没升）→ 策略 `suspect_data`（先触发 2 次 read_now 复核，再判定）
-2. 写 feedback_logs（round、failure_reason、correction_json），生成新任务（trigger=selfloop），回到执行-验证循环。
-3. 第二轮结束仍 failed → run 标 needs_human（防无限循环），报告明示"2 轮修正未达标，转人工"。
+2. 写 feedback_logs（round、failure_reason、correction_json），生成新任务（trigger=selfloop），回到执行-验证循环。**建单只发生一次**：由工作流引擎 `_apply_correction` 按本节的 `correction` 落单并写 feedback_logs；验证层在工作流在场时不再自行建单（否则同一修正会建出两张单，其中一张没人认领、超时重试）。
+3. 第 2 轮（修正后那一轮）结束仍 failed → run 标 `needs_human`（防无限循环），报告明示"2 轮验证仍未达标（含 1 次修正），转人工"。**跑完 ≠ 成功**：`last_verification` 为 `failed` 时 run 不得标 `success`。
 4. **证据链要求**：报告页必须完整展示"第 1 轮基线/复测/达成率 → 诊断 → 修正 → 第 2 轮结果 → outcome 回填"，这是"反馈循环与优化"模块的满分答卷。
 
 ## 11.5 验证引擎验收标准
