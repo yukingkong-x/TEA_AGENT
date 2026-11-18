@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     )
 
     # ---------- 应用 ----------
-    app_name: str = "知秋 · 茶园多智能体编排平台"
+    app_name: str = "茶博士 · 茶园多智能体编排平台"
     app_version: str = "1.0.0"
     tz: str = "Asia/Shanghai"
     log_level: str = "INFO"
@@ -45,8 +45,8 @@ class Settings(BaseSettings):
     mysql_port: int = 3306
     mysql_database: str = "zhiqiu"
     mysql_user: str = "zhiqiu"
-    mysql_password: str = "CHANGE_ME_demo_password"
-    mysql_root_password: str = "CHANGE_ME_mysql_root"
+    mysql_password: str = "change_me_in_env"
+    mysql_root_password: str = "change_me_in_env"
 
     # ---------- Redis ----------
     redis_host: str = "127.0.0.1"
@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     mqtt_host: str = "127.0.0.1"
     mqtt_port: int = 1883
     mqtt_user: str = "tea"
-    mqtt_password: str = "CHANGE_ME_mqtt"
+    mqtt_password: str = "change_me_in_env"
     mqtt_client_id: str = "zhiqiu-backend"
     mqtt_keepalive: int = 60
 

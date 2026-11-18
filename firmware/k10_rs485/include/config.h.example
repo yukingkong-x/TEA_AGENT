@@ -1,0 +1,34 @@
+#ifndef CONFIG_H
+#define CONFIG_H
+
+// 复制本文件为 config.h 后填写。config.h 含密码，已被 .gitignore 排除，不入库。
+
+// ===== WiFi（板子与运行 docker 的电脑必须同一网络）=====
+const char* ssid     = "YOUR_WIFI_SSID";
+const char* password = "YOUR_WIFI_PASSWORD";
+
+// ===== MQTT Broker（跑 docker compose 的那台电脑的局域网 IP）=====
+// Windows 开移动热点时通常是 192.168.137.1；也可以用路由器给电脑分配的 IP。
+// 注意：不是 127.0.0.1 —— 那是板子自己的回环地址。
+const char* mqtt_server   = "192.168.137.1";
+const int   mqtt_port     = 1883;
+const char* mqtt_user     = "tea";
+const char* mqtt_password = "change_me";
+
+// ===== RS485 / Modbus 引脚（行空板 K10, ESP32-S3）=====
+// 遵循旧项目已验证接法：MAX3485 TXD -> IO17(ESP32 RX), RXD -> IO16(ESP32 TX)
+// 自动方向模块无需 DE/RE 控制脚
+const int RS485_TX_PIN   = 16;   // ESP32 TX -> 模块 RXD
+const int RS485_RX_PIN   = 17;   // ESP32 RX <- 模块 TXD
+const int RS485_UART_NUM = 1;    // UART1
+const long RS485_BAUD    = 9600; // 两个传感器均 9600
+
+// ===== Modbus 从站地址（传感器实测值，见 need.md §3.2）=====
+const uint8_t WEATHER_ADDR = 0x03;  // 气象八合一（出厂默认 0x02 已改为 0x03）
+const uint8_t SOIL_ADDR    = 0x02;  // 土壤四合一（保持默认）
+
+// ===== 上报间隔（毫秒）=====
+const unsigned long TELEMETRY_INTERVAL_MS = 10000; // 遥测每 10s（前端看实时变化更明显）
+const unsigned long STATUS_INTERVAL_MS    = 15000; // 心跳每 15s（PRD 要求）
+
+#endif

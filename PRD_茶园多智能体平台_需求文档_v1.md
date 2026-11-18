@@ -2,7 +2,7 @@
 
 > **版本**：v1.1 ｜ **日期**：2026-11-09 ｜ **状态**：施工级（可直接开发）
 >
-> **关于项目名**：项目正式名称未定，本文档统一使用临时代号 **「知秋」（zhiqiu）**。定名后全局替换即可，不影响任何技术内容。
+> **关于项目名**：项目正式名称 **「茶博士」（2026-11-17 定名）**，本文档撰写时曾用临时代号 **「知秋」（zhiqiu）**，历史章节保留代号不改；代码内部标识 zhiqiu 沿用。
 >
 > **本文档的两种读法**：
 >
@@ -1250,10 +1250,10 @@ TZ=Asia/Shanghai
 MYSQL_ROOT_PASSWORD=CHANGE_ME_mysql_root
 MYSQL_DATABASE=zhiqiu
 MYSQL_USER=zhiqiu
-MYSQL_PASSWORD=CHANGE_ME_demo_password
+MYSQL_PASSWORD=CHANGE_ME_mysql
 
 # ===== Redis =====
-REDIS_PASSWORD=CHANGE_ME_demo_password
+REDIS_PASSWORD=CHANGE_ME_redis
 
 # ===== Mosquitto =====
 MQTT_USER=tea
