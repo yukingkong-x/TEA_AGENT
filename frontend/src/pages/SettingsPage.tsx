@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
+import { GlassCard } from '../components/GlassCard'
 import { PageFrame } from '../components/PageFrame'
 import { ApiError } from '../api/client'
 import { endpoints } from '../api/endpoints'
@@ -316,7 +317,7 @@ export function SettingsPage() {
 
   return (
     <PageFrame title="设置">
-      <div className="flex flex-col items-start">
+      <GlassCard className="flex w-full flex-col items-start overflow-hidden" tilt={false}>
         {loadError ? (
           <p className="w-full bg-[#FFF4CC] px-5 py-3 text-sm leading-normal text-[#8A6414]">
             配置没读上来：{loadError}（下面显示的是默认值，改动会尝试写回后端）
@@ -410,8 +411,18 @@ export function SettingsPage() {
                     className="flex w-full items-center justify-start gap-3 px-3 py-3 text-left"
                     onClick={() => setOpenKey(open ? null : agent.agent_key)}
                   >
-                    <span className="text-lg" aria-hidden="true">
-                      {agent.avatar ?? '🤖'}
+                    <span className="h-7 w-7 shrink-0 overflow-hidden rounded-full border border-line bg-panel2" aria-hidden="true">
+                      <img
+                        src={`/avatars/${agent.agent_key}.png`}
+                        alt=""
+                        className="h-full w-full object-cover"
+                        loading="lazy"
+                        onError={(event) => {
+                          // 图片缺失时退回 emoji 徽标，不留破图
+                          const host = event.currentTarget.parentElement
+                          if (host) host.textContent = agent.avatar ?? '🤖'
+                        }}
+                      />
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="block text-sm text-paper">{agent.name}</span>
@@ -765,7 +776,7 @@ export function SettingsPage() {
             ))}
           </ul>
         </section>
-      </div>
+      </GlassCard>
     </PageFrame>
   )
 }

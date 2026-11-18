@@ -18,6 +18,7 @@ import { useLocation } from 'react-router-dom'
 import { FlowEdge } from '../canvas/FlowEdge'
 import { nodeTypes } from '../canvas/nodes'
 import { Button } from '../components/Button'
+import { RunChatDrawer } from '../components/RunChatDrawer'
 import { ApiError } from '../api/client'
 import { fromDagJson, toDagJson } from '../api/dag'
 import { endpoints } from '../api/endpoints'
@@ -56,6 +57,19 @@ function formatTimer(total: number) {
 function errText(err: unknown) {
   if (err instanceof ApiError) return err.notReady ? '模块接入中（SEAM_NOT_READY）' : err.message
   return err instanceof Error ? err.message : String(err)
+}
+
+/** 运行对话抽屉的开关记在本地：录屏时按自己习惯定一次，之后每次进来都保持 */
+const DRAWER_KEY = 'zhiqiu.canvas.drawer'
+
+function readDrawerPref(): boolean {
+  try {
+    const saved = window.localStorage.getItem(DRAWER_KEY)
+    if (saved !== null) return saved === '1'
+  } catch {
+    /* 隐私模式读不到 localStorage，退回按屏宽判断 */
+  }
+  return window.innerWidth >= 1280
 }
 
 /** 节点事件 → 画布状态。按 state 点亮/熄灭，按 status 定红绿（contract 第 7 节）。 */
@@ -112,12 +126,22 @@ function CanvasEditor() {
   const [zoom, setZoom] = useState(0.85)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [query, setQuery] = useState('')
+  const [drawerOpen, setDrawerOpen] = useState(readDrawerPref)
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null)
   const bodyEntry = useRef<string | null>(null)
   const armed = useRef(Boolean((location.state as { arm?: boolean } | null)?.arm))
   const followed = useRef('')
   const paneRef = useRef<HTMLDivElement>(null)
   const running = phase === 'running'
+
+  /* 开关落本地：录屏时不想每次都手动拉开 */
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(DRAWER_KEY, drawerOpen ? '1' : '0')
+    } catch {
+      /* 隐私模式忽略 */
+    }
+  }, [drawerOpen])
 
   const selected = nodes.find((item) => item.id === selectedId) ?? null
 
@@ -146,6 +170,24 @@ function CanvasEditor() {
         setElapsed(0)
         setNote(`已载入「${target.name}」v${target.version} · ${view.nodes.length} 个节点`)
         setError(null)
+        // 画布重开要跟后端对账：上一轮没看完就翻页/重进，这里把真实状态接回来，
+        // 避免出现「巡园早就结束了画布还在跳」或反过来「还在跑画布却装睡」。
+        try {
+          const latest = (await endpoints.runs(1, 1)).items[0]
+          if (latest) {
+            if (latest.status === 'running') {
+              setRunId(latest.id)
+              setPhase('running')
+              setRound(1)
+              setNote(`已接上后端正在执行 run #${latest.id} · 等待节点事件…`)
+            } else if (latest.status !== 'success' || latest.finished_at) {
+              const at = latest.finished_at ? latest.finished_at.slice(11, 19) : ''
+              setNote(`已载入「${target.name}」 · 最近 run #${latest.id} 已结束（${latest.status}${at ? ` · ${at}` : ''}）`)
+            }
+          }
+        } catch {
+          /* 对账失败不影响画布可用 */
+        }
       } catch (err) {
         setNote('后端未连通，画布用本地样例')
         setError(errText(err))
@@ -255,14 +297,27 @@ function CanvasEditor() {
         setNote(`执行中 · ${data.node_count ?? '?'} 个节点`)
         return
       }
+      // 收尾兜底：没等到 finished 事件的节点（网络抖动/翻页回来）统一清算，
+      // 不让画布上留着永远在跳的「执行中」光斑。
+      const terminal: RunStatus = data.status === 'failed' ? 'failed' : 'done'
+      setNodes((current) =>
+        current.map((item) =>
+          item.data.status === 'running'
+            ? { ...item, data: { ...item.data, status: terminal, remain: undefined } }
+            : item,
+        ),
+      )
       setPhase(data.status === 'success' ? 'success' : 'failed')
       if (typeof data.rounds === 'number' && data.rounds > 0) setRound(data.rounds)
       const seconds = typeof data.duration_ms === 'number' ? (data.duration_ms / 1000).toFixed(1) : '—'
-      setNote(
-        data.status === 'success'
-          ? `执行完成 · ${seconds}s · ${data.rounds ?? 1} 轮`
-          : `执行失败：${data.error || '未知原因'}`,
-      )
+      // needs_human 是正常收尾（转人工复核），不是「执行失败」，提示要分开写
+      if (data.status === 'needs_human') {
+        setNote(`执行完成 · ${seconds}s · 已转人工复核（湿度不达标或数据存疑）`)
+      } else if (data.status === 'success') {
+        setNote(`执行完成 · ${seconds}s · ${data.rounds ?? 1} 轮`)
+      } else {
+        setNote(`执行失败：${data.error || '未知原因'}`)
+      }
     })
     return () => {
       offNode()
@@ -389,9 +444,10 @@ function CanvasEditor() {
   })
 
   return (
-    <div
-      ref={paneRef}
-      className="relative h-full min-h-[640px] min-w-0 flex-1 bg-[#F6F7FB]"
+    <div className="relative flex h-full min-h-[640px] w-full min-w-0">
+      <div
+        ref={paneRef}
+        className="relative h-full min-h-[640px] min-w-0 flex-1 bg-[#F6F7FB]"
       onDragOver={(event) => event.preventDefault()}
       onDrop={onDrop}
     >
@@ -469,6 +525,21 @@ function CanvasEditor() {
             </span>
             <button
               type="button"
+              aria-pressed={drawerOpen}
+              title={drawerOpen ? '收起右侧运行对话' : '展开右侧运行对话：同屏看结构和发言'}
+              className={`inline-flex h-9 items-center gap-1.5 rounded-btn px-3 text-xs leading-none shadow-[0_6px_20px_rgba(23,33,27,0.06)] ${
+                drawerOpen ? 'bg-tea text-white hover:bg-teaHover' : 'bg-panel text-paper hover:text-tea'
+              }`}
+              onClick={() => setDrawerOpen((open) => !open)}
+            >
+              <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+                <rect x="1" y="2" width="12" height="10" rx="2" fill="none" stroke="currentColor" strokeWidth="1.2" />
+                <path d="M8.5 2v10" stroke="currentColor" strokeWidth="1.2" />
+              </svg>
+              对话
+            </button>
+            <button
+              type="button"
               disabled={busy !== null || running}
               className="h-11 rounded-btn bg-panel px-3 text-base text-dim shadow-[0_6px_20px_rgba(23,33,27,0.06)] disabled:opacity-50"
               onClick={() => void save()}
@@ -525,28 +596,47 @@ function CanvasEditor() {
           </div>
         ) : null}
 
-        <div className="absolute bottom-4 left-1/2 z-30 flex -translate-x-1/2 items-center gap-1 rounded-full border border-line bg-panel p-1.5 shadow-[0_10px_30px_rgba(23,33,27,0.1)]">
-          <button type="button" className="num h-10 rounded-full px-3 text-base text-paper" onClick={() => zoomTo(1)}>
-            {Math.round(zoom * 100)}%
-          </button>
-          <button type="button" className="h-10 rounded-full px-3 text-base text-dim" onClick={() => zoomTo(Math.max(0.35, zoom - 0.1))}>
-            缩小
-          </button>
-          <button type="button" className="h-10 rounded-full px-3 text-base text-dim" onClick={() => zoomTo(Math.min(1.4, zoom + 0.1))}>
-            放大
-          </button>
+        <div className="absolute bottom-4 left-1/2 z-30 flex -translate-x-1/2 items-center gap-1 whitespace-nowrap rounded-full border border-line bg-panel p-1.5 shadow-[0_10px_30px_rgba(23,33,27,0.1)]">
+          <div className="flex items-center gap-0.5 rounded-full bg-panel2 p-1">
+            <button
+              type="button"
+              title="缩小"
+              aria-label="缩小"
+              className="flex h-8 w-8 items-center justify-center rounded-full text-lg leading-none text-dim hover:bg-panel"
+              onClick={() => zoomTo(Math.max(0.35, zoom - 0.1))}
+            >
+              −
+            </button>
+            <button
+              type="button"
+              title="恢复 100%"
+              className="num h-8 min-w-[3.5rem] rounded-full px-2 text-sm text-paper hover:bg-panel"
+              onClick={() => zoomTo(1)}
+            >
+              {Math.round(zoom * 100)}%
+            </button>
+            <button
+              type="button"
+              title="放大"
+              aria-label="放大"
+              className="flex h-8 w-8 items-center justify-center rounded-full text-lg leading-none text-dim hover:bg-panel"
+              onClick={() => zoomTo(Math.min(1.4, zoom + 0.1))}
+            >
+              ＋
+            </button>
+          </div>
           <button
             type="button"
             aria-expanded={pickerOpen}
-            className="h-10 rounded-full bg-tea px-4 text-base text-white hover:bg-teaHover active:bg-teaPress"
+            className="h-10 shrink-0 whitespace-nowrap rounded-full bg-tea px-4 text-base text-white hover:bg-teaHover active:bg-teaPress"
             onClick={() => setPickerOpen((open) => !open)}
           >
-            + 添加节点
+            ＋ 添加节点
           </button>
           {running ? (
             <button
               type="button"
-              className="h-10 rounded-full bg-[#FFECE8] px-4 text-base text-danger"
+              className="h-10 shrink-0 whitespace-nowrap rounded-full bg-[#FFECE8] px-4 text-base text-danger"
               onClick={() => {
                 setPhase('idle')
                 setNote('已停止跟随动画；后端这一轮仍会跑完')
@@ -558,7 +648,7 @@ function CanvasEditor() {
             <button
               type="button"
               disabled={busy !== null || !wfId}
-              className="h-10 rounded-full bg-tea px-4 text-base text-white hover:bg-teaHover active:bg-teaPress disabled:opacity-50"
+              className="h-10 shrink-0 whitespace-nowrap rounded-full bg-tea px-5 text-base text-white hover:bg-teaHover active:bg-teaPress disabled:opacity-50"
               onClick={() => void startRun()}
             >
               {busy === 'run' ? '下发中…' : '运行'}
@@ -600,6 +690,13 @@ function CanvasEditor() {
           }}
         />
       </div>
+      <RunChatDrawer
+        open={drawerOpen}
+        runId={runId}
+        running={running}
+        onClose={() => setDrawerOpen(false)}
+      />
+    </div>
   )
 }
 

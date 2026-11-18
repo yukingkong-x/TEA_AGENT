@@ -17,8 +17,12 @@ export function PageFrame({
         <h1 className="text-paper">{title}</h1>
         <StatusCluster />
       </header>
+      {/*
+       * 这里刻意不再铺一层白色面板：页面里的每一块内容自己就是玻璃卡片，
+       * 底色交给 App 的环境光。留这层只为了管滚动（fill 模式还要管 flex）。
+       */}
       <div
-        className={`min-h-0 flex-1 rounded-[16px] bg-panel shadow-[0_1px_2px_rgba(22,28,45,0.05)] ${
+        className={`min-h-0 flex-1 rounded-[16px] ${
           fill ? 'flex flex-col overflow-hidden' : 'overflow-auto'
         }`}
       >

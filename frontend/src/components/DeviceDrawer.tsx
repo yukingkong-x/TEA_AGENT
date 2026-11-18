@@ -90,7 +90,7 @@ export function DeviceDrawer({ device, onClose }: { device: Device | null; onClo
             </p>
           </div>
           <button ref={closeRef} type="button" className="btn btn-ghost h-11 w-11 px-0" aria-label="关闭" onClick={onClose}>
-            <Icon name="close" />
+            <Icon name="close" variant="current" />
           </button>
         </div>
         <div className="flex-1 overflow-auto px-6 py-5">

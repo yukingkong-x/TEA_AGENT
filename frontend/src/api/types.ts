@@ -40,6 +40,18 @@ export type SensorHistoryDto = {
   points: { ts: string; value: number }[]
 }
 
+/** GET /api/sensor/day —— 10 分钟桶聚合的全指标摘要（日高日低 / DLI / 3h 变压靠它算） */
+export type SensorDayDto = {
+  device_id: string
+  from: string
+  to: string
+  bucket_minutes: number
+  metrics: Record<
+    string,
+    { points: { ts: string; value: number }[]; min: number; max: number; count: number }
+  >
+}
+
 /**
  * 后端 tasks.status：`models/tasks.py` 枚举 9 态 + needs_human
  * （needs_human 在枚举补齐前会以 failed + result.verdict 出现）。
@@ -227,7 +239,8 @@ export type TaskEventDto = {
 /** 画布执行事件（contract 第 7 节）：`run_status` + `node_state` 两类，用 state 区分开始/结束 */
 export type RunStatusEventDto = {
   run_id: number
-  status: 'running' | 'success' | 'failed'
+  /** 后端引擎实际会发 running / success / failed / needs_human（转人工） */
+  status: 'running' | 'success' | 'failed' | 'needs_human' | (string & {})
   wf_key?: string
   trigger?: string
   node_count?: number
@@ -375,6 +388,8 @@ export type NodeRecordDto = {
   node_id: string
   node_type: string
   name: string
+  /** 调用了哪个智能体（node_type=agent 时有值，其它节点为 null） */
+  agent_key?: string | null
   status: string
   /** 第几轮；主链首验是 1，Self-Loop 回跳的节点是 2 */
   round_no: number
@@ -460,6 +475,33 @@ export type DagJson = {
   nodes: DagNode[]
   edges?: unknown[]
   meta?: Record<string, unknown>
+}
+
+/** 问答引用：index 与答案里的 [1][2] 一一对应，点它跳知识库 */
+export type QaCitationDto = {
+  index: number
+  title: string
+  snippet: string
+  score?: number | null
+  doc_id?: number | null
+}
+
+/**
+ * `/api/qa/ask` 的返回。
+ * `degraded=true` 不是错误：模型没 Key / 被限流 / 超时都会走这条路，
+ * 页面照常渲染 citations，只是加一行提示。
+ * `guarded=true` 说明答案被数值护栏替换过（详见后端 answering.py）。
+ */
+export type QaAnswerDto = {
+  question: string
+  answer: string | null
+  citations: QaCitationDto[]
+  degraded: boolean
+  reason?: string | null
+  guarded?: boolean
+  provider?: string | null
+  latency_ms?: number
+  retrieved?: number
 }
 
 /** WS /ws/dashboard 统一信封 */

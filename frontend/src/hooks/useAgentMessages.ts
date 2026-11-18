@@ -61,7 +61,8 @@ function toCitations(raw: unknown): KnowledgeHitDto[] | undefined {
   })
 }
 
-function fromDto(dto: AgentMessageDto): UiMessage {
+/** 后端消息 → UI 消息。画布右侧抽屉与对话页共用这一份解析，避免两处口径漂移 */
+export function fromDto(dto: AgentMessageDto): UiMessage {
   const { content, degraded } = splitDegraded(dto.content ?? '')
   return {
     id: String(dto.id),

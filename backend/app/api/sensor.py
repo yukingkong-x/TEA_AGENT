@@ -114,3 +114,66 @@ def history(
         "count": len(points),
         "points": points,
     }
+
+
+@router.get("/day", summary="近 N 小时全指标摘要（10 分钟桶，日高日低/DLI/变压用）")
+def day_summary(
+    device_id: str = Query(..., description="设备 id"),
+    hours: int = Query(24, ge=1, le=168, description="回看窗口（小时）"),
+    bucket_minutes: int = Query(10, ge=1, le=60, description="聚合桶宽（分钟）"),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """一条请求带回该设备全部指标的降采样序列与窗口极值。
+
+    前端的三类衍生指标都靠它算，不再各拉一遍 history：
+    · 气温日高/日低 → metrics[temperature_c].min/max
+    · 3h 变压 → pressure 序列里隔 3h 的两点相减
+    · DLI 日累计 → lux 序列梯形积分（前端做，1 lx ≈ 0.0182 μmol/m²/s）
+    """
+    now = datetime.now()
+    since = now - timedelta(hours=hours)
+    rows = db.execute(
+        select(SensorData.metric, SensorData.ts, SensorData.value).where(
+            SensorData.device_id == device_id,
+            SensorData.ts >= since,
+            SensorData.ts <= now,
+        )
+    ).all()
+
+    buckets: dict[str, dict[datetime, tuple[float, int]]] = {}
+    stats: dict[str, dict[str, float]] = {}
+    step = timedelta(minutes=bucket_minutes)
+    for metric, ts, value in rows:
+        # 哨兵值过滤：设备读数失败时固件/入库链路会落 -999，
+        # 混进序列会把 min/max 和曲线打成「-999℃」，宁可少一个点也不画假谷底
+        num = float(value) if isinstance(value, Decimal) else float(value)
+        if num <= -900:
+            continue
+        # 归到桶起点：分钟对齐到 bucket_minutes 的整数倍，秒清零
+        start = ts.replace(second=0, microsecond=0, minute=(ts.minute // bucket_minutes) * bucket_minutes)
+        bucket = buckets.setdefault(metric, {})
+        total, count = bucket.get(start, (0.0, 0))
+        bucket[start] = (total + num, count + 1)
+        stat = stats.setdefault(metric, {"min": num, "max": num})
+        stat["min"] = min(stat["min"], num)
+        stat["max"] = max(stat["max"], num)
+
+    metrics: dict[str, Any] = {}
+    for metric, bucket in buckets.items():
+        points = [
+            {"ts": start.isoformat(timespec="seconds"), "value": round(total / count, 2)}
+            for start, (total, count) in sorted(bucket.items())
+        ]
+        metrics[metric] = {
+            "points": points,
+            "min": stats[metric]["min"],
+            "max": stats[metric]["max"],
+            "count": len(points),
+        }
+    return {
+        "device_id": device_id,
+        "from": since.isoformat(timespec="seconds"),
+        "to": now.isoformat(timespec="seconds"),
+        "bucket_minutes": bucket_minutes,
+        "metrics": metrics,
+    }

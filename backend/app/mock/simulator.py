@@ -364,10 +364,18 @@ class Simulator:
         humidity = 60 + 10 * math.sin((hour - 3) / 24 * 2 * math.pi)
         day = max(0.0, math.sin((hour - 6) / 12 * math.pi))
         lux = 200 + 1050 * day + random.uniform(-30, 30)
+        # 气象站另外三项（固件 k10_rs485 真实上报的字段，面板要用）：
+        # 气压是半日波（凌晨高、午后低），风速随日照上升，噪音只是陪衬。
+        pressure = 101.3 + 0.5 * math.sin((hour - 4) / 12 * math.pi) + random.uniform(-0.05, 0.05)
+        wind = max(0.0, 1.1 + 0.9 * day + random.uniform(-0.3, 0.3))
+        noise = 38 + 6 * day + random.uniform(-1.5, 1.5)
         return {
             "temperature_c": self._jitter(round(temp, 1)),
             "humidity_air": self._jitter(round(humidity, 1)),
             "lux": round(max(0.0, lux), 0),
+            "pressure": round(pressure, 2),
+            "wind_speed": round(wind, 1),
+            "noise": round(noise, 1),
         }
 
     def _soil_metrics(self) -> dict[str, float]:
@@ -375,8 +383,13 @@ class Simulator:
         moisture = self.soil.moisture
         if self.faults["dry_soil"]:
             moisture = min(moisture, 25.0)
+        # 土温比气温滞后约 3 小时、振幅小一半——真实墒情探头就是这个手感，
+        # 面板上「气温 vs 土温」两条曲线的错位才解释得通。
+        hour = time.localtime().tm_hour + time.localtime().tm_min / 60.0
+        soil_temp = 22.5 + 1.3 * math.sin((hour - 12) / 24 * 2 * math.pi)
         return {
             "soil_moisture": round(moisture if not self.faults["sensor_jitter"] else self._jitter(moisture), 2),
+            "soil_temp": round(soil_temp + random.uniform(-0.15, 0.15), 1),
             "adc_raw": int(2870 - moisture * 12),
         }
 

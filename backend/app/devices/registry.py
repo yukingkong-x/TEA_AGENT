@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Any
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from ..core.redis_client import Keys, get_last_seen, get_redis, touch_last_seen
@@ -163,10 +163,42 @@ def deactivate_mock_devices(db: Session) -> int:
 
 
 # ------------------------------------------------------------------ 离线巡检
+def _pending_offline_alert(db: Session, device_id: str) -> int | None:
+    """该设备是否已有一条「还没人确认」的离线报警（同设备只留一条，不刷屏）。"""
+    return db.scalar(
+        select(Alert.id)
+        .where(
+            Alert.source == f"device:{device_id}",
+            Alert.acknowledged.is_(False),
+            Alert.message.like("%离线%"),
+        )
+        .limit(1)
+    )
+
+
+def _ack_offline_alerts(db: Session, device_id: str) -> int:
+    """设备恢复在线时自动确认它的离线报警：现象已消失，别让人再手动点一遍。"""
+    result = db.execute(
+        update(Alert)
+        .where(
+            Alert.source == f"device:{device_id}",
+            Alert.acknowledged.is_(False),
+            Alert.message.like("%离线%"),
+        )
+        .values(acknowledged=True)
+    )
+    return int(result.rowcount or 0)
+
+
 def sweep_offline(db: Session) -> list[dict[str, Any]]:
     """离线巡检（由后台循环每 15s 调一次）：>120s 判定离线，写 alerts + WS 广播。
 
-    返回本轮新产生的报警，方便调用方打日志。Redis 标记去重，避免每轮刷屏。
+    返回本轮新产生的报警，方便调用方打日志。
+
+    三条收敛规则（不这么做大屏会被刷爆，实测攒了 70+ 条同质告警）：
+    1. 同一台设备只保留**一条未确认**的离线报警，人工确认过才允许再报；
+    2. 模拟设备（mock-*）只维护在线状态，**不产生**告警——它们没有实体，报离线没人能处置；
+    3. 设备恢复在线时自动确认历史离线报警（故障现象已消失）。
     """
     events: list[dict[str, Any]] = []
     now = time.time()
@@ -180,6 +212,11 @@ def sweep_offline(db: Session) -> list[dict[str, Any]]:
                 device.online = False
             continue
         gap = now - last
+        if device.is_mock:
+            # 模拟设备不参与告警，只同步在线态，避免真机演示时冒出查无实物的警报
+            if device.online and gap > SUSPECT_WINDOW_S:
+                device.online = False
+            continue
         if gap > SUSPECT_WINDOW_S:
             if device.online:
                 device.online = False
@@ -188,7 +225,7 @@ def sweep_offline(db: Session) -> list[dict[str, Any]]:
                 first_time = bool(get_redis().set(flag_key, 1, nx=True, ex=3600))
             except Exception:  # pragma: no cover
                 first_time = False
-            if first_time:
+            if first_time and _pending_offline_alert(db, device.device_id) is None:
                 alert = Alert(
                     level="warning",
                     source=f"device:{device.device_id}",
@@ -207,11 +244,15 @@ def sweep_offline(db: Session) -> list[dict[str, Any]]:
                 manager.publish_threadsafe("alert", {k: v for k, v in event.items() if k != "type"})
                 manager.publish_threadsafe("device_status", state_dict(device))
                 logger.warning("设备离线报警：{}（{}s 无心跳）", device.device_id, int(gap))
+            elif first_time:
+                logger.info("设备 {} 仍有未确认离线报警，本轮不再重复推送", device.device_id)
         else:
             if not device.online:
                 device.online = True
                 manager.publish_threadsafe("device_status", state_dict(device))
                 logger.info("设备恢复在线：{}", device.device_id)
+                if _ack_offline_alerts(db, device.device_id):
+                    logger.info("设备 {} 恢复在线，自动确认历史离线报警", device.device_id)
             try:
                 get_redis().delete(Keys.device_alerted(device.device_id))
             except Exception:  # pragma: no cover

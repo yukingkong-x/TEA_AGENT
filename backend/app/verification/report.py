@@ -44,6 +44,9 @@ class RoundView:
     target_high: float = 65.0
     duration_s: float = 0.0
     note: str = ""
+    # 三路原始分(0-1)：wiring 组装 rounds 时会带上，渲染器目前只用总分；
+    # 必须接住这个键，否则 RoundView(**item) 直接 TypeError、生成日报 500。
+    conf_detail: dict = field(default_factory=dict)
 
     @property
     def gap(self) -> float:

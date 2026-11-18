@@ -3,6 +3,7 @@ import { endpoints } from '../api/endpoints'
 import type { NodeRecordDto, NodeSummaryDto, RunRoundsDto, WorkflowRunDto } from '../api/types'
 import { ConfidenceGauge } from '../components/ReportGauges'
 import { Markdown } from '../components/Markdown'
+import { GlassCard } from '../components/GlassCard'
 import { PageFrame } from '../components/PageFrame'
 import { ReportTrend } from '../components/ReportTrend'
 import {
@@ -108,8 +109,13 @@ export function ReportPage() {
       return
     }
     try {
-      // 先找已生成的报告，避免每次点都往 reports 表插一条
-      const existing = await endpoints.reports({ run_id: runId as number, report_type: 'run', page: 1, page_size: 1 })
+      // 先找已生成的报告，避免每次点都往 reports 表插一条。
+      // 但 run 还在跑时旧报告必然是「执行中」的过期快照，必须重新生成，
+      // 否则录屏里点半天出来的永远是中途那份结论。
+      const stillRunning = (view?.outcome ?? '') === 'running'
+      const existing = stillRunning
+        ? { items: [] as { id: number }[] }
+        : await endpoints.reports({ run_id: runId as number, report_type: 'run', page: 1, page_size: 1 })
       const hit = existing.items[0] as { id: number } | undefined
       const reportId = hit?.id ?? (await endpoints.generateReport(runId as number)).report_id
       const detail = (await endpoints.report(reportId)) as { content_md?: string }
@@ -189,11 +195,11 @@ export function ReportPage() {
 
         {latest ? (
           <div className="grid items-stretch gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
-            <section className="rounded-2xl bg-[#F7F8FA] px-4 py-4">
+            <GlassCard className="px-4 py-4" tilt={false}>
               <h2 className="text-center text-paper">置信度</h2>
               <ConfidenceGauge value={latest.confidence} caption={`第 ${latest.round} 轮`} />
-            </section>
-            <section className="min-w-0 rounded-2xl bg-[#F7F8FA] px-5 py-4">
+            </GlassCard>
+            <GlassCard className="min-w-0 px-5 py-4" tilt={false}>
               <div className="flex items-center justify-between gap-3">
                 <h2 className="text-paper">湿度轨迹</h2>
                 <p className="text-sm text-mute">浇水前到两轮复测</p>
@@ -203,7 +209,7 @@ export function ReportPage() {
               ) : (
                 <p className="grid h-[280px] place-items-center text-sm text-mute">这次只有一轮，没有两轮湿度轨迹。</p>
               )}
-            </section>
+            </GlassCard>
           </div>
         ) : (
           // outcome=unverified：run 收尾了但验证官没出记录，页面不画空圆环、不写 0%
@@ -230,7 +236,7 @@ export function ReportPage() {
 
         <NodeTimeline nodes={nodes} summary={nodeSummary} />
 
-        <section className="rounded-2xl bg-[#F7F8FA] px-5 py-4">
+        <GlassCard className="px-5 py-4" tilt={false}>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="text-paper">日报</h2>
             <div className="no-print flex gap-3">
@@ -252,7 +258,7 @@ export function ReportPage() {
               <p className="text-sm text-mute">点生成日报后，这里出现报告正文。</p>
             )}
           </div>
-        </section>
+        </GlassCard>
       </div>
     </PageFrame>
   )
@@ -267,7 +273,7 @@ function NodeTimeline({ nodes, summary }: { nodes: NodeRecordDto[]; summary: Nod
   if (!nodes.length) return null
   const rounds = [...new Set(nodes.map((node) => node.round_no || 1))].sort((a, b) => a - b)
   return (
-    <section className="rounded-2xl bg-[#F7F8FA] px-5 py-4">
+    <GlassCard className="px-5 py-4" tilt={false}>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-paper">节点耗时</h2>
         {summary ? (
@@ -281,30 +287,30 @@ function NodeTimeline({ nodes, summary }: { nodes: NodeRecordDto[]; summary: Nod
         ) : null}
       </div>
       <div className="mt-3 overflow-x-auto">
-        <table className="w-full border-collapse text-left text-sm leading-normal">
+        <table className="data-table is-hoverable w-full text-left text-sm leading-normal">
           <thead>
             <tr className="text-xs text-mute">
-              <th className="border-b border-line px-3 py-2 text-left font-normal">节点</th>
-              <th className="border-b border-line px-3 py-2 text-left font-normal">轮次</th>
-              <th className="border-b border-line px-3 py-2 text-left font-normal">耗时</th>
-              <th className="border-b border-line px-3 py-2 text-left font-normal">工具</th>
-              <th className="border-b border-line px-3 py-2 text-left font-normal">状态</th>
+              <th className="px-3 py-2.5 text-left font-normal">节点</th>
+              <th className="px-3 py-2.5 text-left font-normal">轮次</th>
+              <th className="px-3 py-2.5 text-left font-normal">耗时</th>
+              <th className="px-3 py-2.5 text-left font-normal">工具</th>
+              <th className="px-3 py-2.5 text-left font-normal">状态</th>
             </tr>
           </thead>
           <tbody>
             {nodes.map((node) => (
               <tr key={`${node.node_id}-${node.round_no}`}>
-                <td className="border-b border-line px-3 py-2 text-paper">
+                <td className="px-3 py-2.5 text-paper">
                   <span className="num mr-2 text-xs text-mute">{node.node_id}</span>
                   {node.name}
                   {node.node_type === 'loop' ? <span className="ml-2 text-xs text-mute">（含整个修正轮）</span> : null}
                 </td>
-                <td className="num border-b border-line px-3 py-2 text-dim">
+                <td className="num px-3 py-2.5 text-dim">
                   {rounds.length > 1 ? `第 ${node.round_no || 1} 轮` : '—'}
                 </td>
-                <td className="num border-b border-line px-3 py-2 text-paper">{(node.duration_ms / 1000).toFixed(1)}s</td>
-                <td className="num border-b border-line px-3 py-2 text-dim">{node.tool_calls?.length || '—'}</td>
-                <td className="border-b border-line px-3 py-2">
+                <td className="num px-3 py-2.5 text-paper">{(node.duration_ms / 1000).toFixed(1)}s</td>
+                <td className="num px-3 py-2.5 text-dim">{node.tool_calls?.length || '—'}</td>
+                <td className="px-3 py-2.5">
                   <span
                     className={`inline-flex h-6 items-center rounded-btn px-2 text-xs leading-none ${
                       node.status === 'failed'
@@ -323,7 +329,7 @@ function NodeTimeline({ nodes, summary }: { nodes: NodeRecordDto[]; summary: Nod
           </tbody>
         </table>
       </div>
-    </section>
+    </GlassCard>
   )
 }
 
@@ -418,7 +424,7 @@ function RoundBlock({
   const ringColor = handedOff ? '#6D28D9' : missing ? '#86909C' : closed ? '#1F7A45' : '#E4B423'
 
   return (
-    <section className="rounded-2xl bg-[#F7F8FA] px-5 py-5">
+    <GlassCard className="px-5 py-5" tilt={false}>
       <div className="flex items-center gap-4">
         <div className="min-w-0 flex-1">
           <h2 className="text-paper">第 {round.round} 轮</h2>
@@ -443,19 +449,19 @@ function RoundBlock({
             </div>
           </dl>
           <div className="mt-3 overflow-hidden rounded-xl border border-line bg-panel">
-            <table className="w-full border-collapse text-left text-sm leading-normal">
+            <table className="data-table w-full text-left text-sm leading-normal">
               <tbody>
                 <tr>
-                  <th className="w-24 border-b border-line bg-[#F7F8FA] px-3 py-2.5 text-left text-sm font-normal text-dim">诊断</th>
-                  <td className="border-b border-line px-3 py-2.5 text-paper">{round.diagnosis}</td>
+                  <th className="w-24 bg-[#F7F8FA] px-3 py-2.5 text-left text-sm font-normal text-dim">诊断</th>
+                  <td className="px-3 py-2.5 text-paper">{round.diagnosis}</td>
                 </tr>
                 <tr>
-                  <th className="w-24 border-b border-line bg-[#F7F8FA] px-3 py-2.5 text-left text-sm font-normal text-dim">修正策略</th>
-                  <td className="border-b border-line px-3 py-2.5 text-paper">{round.correction}</td>
+                  <th className="w-24 bg-[#F7F8FA] px-3 py-2.5 text-left text-sm font-normal text-dim">修正策略</th>
+                  <td className="px-3 py-2.5 text-paper">{round.correction}</td>
                 </tr>
                 <tr>
-                  <th className="w-24 border-b border-line bg-[#F7F8FA] px-3 py-2.5 text-left text-sm font-normal text-dim">置信度构成</th>
-                  <td className="border-b border-line px-3 py-2.5">
+                  <th className="w-24 bg-[#F7F8FA] px-3 py-2.5 text-left text-sm font-normal text-dim">置信度构成</th>
+                  <td className="px-3 py-2.5">
                     <ConfidenceBreakdown round={round} />
                   </td>
                 </tr>
@@ -471,7 +477,7 @@ function RoundBlock({
         </div>
         <RateRing rate={round.rate} color={ringColor} missing={missing} />
       </div>
-    </section>
+    </GlassCard>
   )
 }
 

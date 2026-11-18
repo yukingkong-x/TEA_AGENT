@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState, type MouseEvent, type ReactNode } from 'react'
+import { GlassCard } from '../components/GlassCard'
 import { PageFrame } from '../components/PageFrame'
+import { AgentCallPanel, ReportPanel, VerifyPanel } from '../components/TaskTypePanels'
 import { ApiError } from '../api/client'
 import { endpoints } from '../api/endpoints'
 import { dashboardSocket } from '../api/socket'
@@ -215,6 +217,11 @@ export function TasksPage() {
   }, [rows, picked, type, range, query])
 
   const pageCount = Math.max(1, Math.ceil(view.length / pageSize))
+  /**
+   * 「智能体调用 / 验证 / 报告」不是任务单：它们在 run 节点、verification、
+   * reports 三张表里，按 tasks.type 永远筛不到数据。这三个标签走各自的面板。
+   */
+  const isTaskTab = type === 'all' || type === 'device_cmd'
   const current = Math.min(page, pageCount)
   const paged = view.slice((current - 1) * pageSize, current * pageSize)
   const open = openId ? (rows.find((row) => row.id === openId) ?? null) : null
@@ -251,7 +258,7 @@ export function TasksPage() {
 
   return (
     <PageFrame title="任务" fill>
-      <section className="flex h-full min-h-0 flex-col">
+      <GlassCard className="flex h-full min-h-0 flex-col overflow-hidden" tilt={false}>
         <div className="flex shrink-0 gap-6 border-b border-[#EEF0F3] px-5" role="tablist" aria-label="任务类型">
           <Tab on={type === 'all'} onClick={() => setType('all')}>
             全部
@@ -262,6 +269,8 @@ export function TasksPage() {
             </Tab>
           ))}
         </div>
+        {isTaskTab ? (
+          <>
         <div className="shrink-0 px-5 py-3">
           <label className="relative block w-[240px] max-w-full">
             <span className="sr-only">搜索任务</span>
@@ -278,22 +287,22 @@ export function TasksPage() {
           </label>
         </div>
         <div className="min-h-0 flex-1 overflow-auto">
-          <table className="w-full min-w-[980px] border-collapse text-left text-sm leading-normal">
-            <thead className="sticky top-0 z-10 bg-panel text-dim">
+          <table className="data-table is-hoverable w-full min-w-[980px] text-left text-sm leading-normal">
+            <thead className="sticky top-0 z-10 bg-white/85 text-dim backdrop-blur-md">
               <tr>
-                <th className="border-b border-[#EEF0F3] px-5 py-3 font-normal">任务号</th>
-                <th className="border-b border-[#EEF0F3] px-4 py-3 font-normal">类型</th>
-                <th className="border-b border-[#EEF0F3] px-4 py-3 font-normal">目标</th>
-                <th className="border-b border-[#EEF0F3] px-4 py-3 font-normal">优先级</th>
-                <th className="border-b border-[#EEF0F3] px-4 py-3 font-normal">分数</th>
-                <th className="border-b border-[#EEF0F3] px-4 py-3 font-normal">
+                <th className="px-5 py-3 font-normal">任务号</th>
+                <th className="px-4 py-3 font-normal">类型</th>
+                <th className="px-4 py-3 font-normal">目标</th>
+                <th className="px-4 py-3 font-normal">优先级</th>
+                <th className="px-4 py-3 font-normal">分数</th>
+                <th className="px-4 py-3 font-normal">
                   <FilterButton active={picked.length > 0} open={menu?.kind === 'status'} onClick={(event) => openMenu('status', event)}>
                     状态
                   </FilterButton>
                 </th>
-                <th className="border-b border-[#EEF0F3] px-4 py-3 font-normal">重试</th>
-                <th className="border-b border-[#EEF0F3] px-4 py-3 font-normal">耗时</th>
-                <th className="border-b border-[#EEF0F3] px-4 py-3 font-normal">
+                <th className="px-4 py-3 font-normal">重试</th>
+                <th className="px-4 py-3 font-normal">耗时</th>
+                <th className="px-4 py-3 font-normal">
                   <FilterButton active={range !== 'all'} open={menu?.kind === 'time'} onClick={(event) => openMenu('time', event)}>
                     创建时间
                   </FilterButton>
@@ -311,7 +320,7 @@ export function TasksPage() {
                 paged.map((task) => (
                   <tr
                     key={task.id}
-                    className={`cursor-pointer border-b border-[#F2F3F5] last:border-b-0 hover:bg-[#F7F8FA] ${openId === task.id ? 'bg-panel2' : ''}`}
+                    className={`cursor-pointer ${openId === task.id ? 'is-open' : ''}`}
                     onClick={() => setOpenId(task.id)}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter' || event.key === ' ') {
@@ -321,17 +330,17 @@ export function TasksPage() {
                     }}
                     tabIndex={0}
                   >
-                    <td className="num px-5 py-3.5 text-tea">{task.id}</td>
-                    <td className="px-4 py-3.5">{taskTypes.find((item) => item.id === task.type)?.label ?? task.type}</td>
-                    <td className="px-4 py-3.5 text-dim">{task.target}</td>
-                    <td className="num px-4 py-3.5">{task.priority}</td>
-                    <td className="num px-4 py-3.5">{task.score === null ? '—' : task.score.toFixed(2)}</td>
-                    <td className="px-4 py-3.5">
+                    <td className="num px-5 py-4 text-tea">{task.id}</td>
+                    <td className="px-4 py-4">{taskTypes.find((item) => item.id === task.type)?.label ?? task.type}</td>
+                    <td className="px-4 py-4 text-dim">{task.target}</td>
+                    <td className="num px-4 py-4">{task.priority}</td>
+                    <td className="num px-4 py-4">{task.score === null ? '—' : task.score.toFixed(2)}</td>
+                    <td className="px-4 py-4">
                       <StatusBadge task={task} />
                     </td>
-                    <td className="num px-4 py-3.5">{task.retry_count}</td>
-                    <td className="px-4 py-3.5">{task.elapsed}</td>
-                    <td className="num px-4 py-3.5 text-dim">{formatClock(task.created)}</td>
+                    <td className="num px-4 py-4">{task.retry_count}</td>
+                    <td className="px-4 py-4">{task.elapsed}</td>
+                    <td className="num px-4 py-4 text-dim">{formatClock(task.created)}</td>
                   </tr>
                 ))
               )}
@@ -390,7 +399,15 @@ export function TasksPage() {
             />
           </div>
         </footer>
-      </section>
+          </>
+        ) : type === 'agent_call' ? (
+          <AgentCallPanel />
+        ) : type === 'verify' ? (
+          <VerifyPanel />
+        ) : (
+          <ReportPanel />
+        )}
+      </GlassCard>
       {menu ? (
         <FilterMenu top={menu.top} left={menu.left} onClose={() => setMenu(null)}>
           {menu.kind === 'status'

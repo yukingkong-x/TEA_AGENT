@@ -11,6 +11,7 @@ from .alerts import router as alerts_router
 from .devices import router as devices_router
 from .health import router as health_router
 from .knowledge import router as knowledge_router
+from .qa import router as qa_router
 from .reports import router as reports_router
 from .sensor import router as sensor_router
 from .settings import router as settings_router
@@ -27,6 +28,7 @@ for _router in (
     devices_router,
     sensor_router,
     knowledge_router,
+    qa_router,
     verify_router,
     reports_router,
     settings_router,

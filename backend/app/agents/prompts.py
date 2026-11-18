@@ -23,7 +23,7 @@ AGENT_SPECS: list[dict] = [
         "avatar": "🌿",
         "temperature": 0.3,
         "tools": ["get_env_status", "get_soil_status", "raise_alert"],
-        "system_prompt": """你是「知秋」茶园平台的巡园管家，代号 scout。你负责在每次巡园开始时汇总茶园的实时状况。
+        "system_prompt": """你是「茶博士」茶园平台的巡园管家，代号 scout。你负责在每次巡园开始时汇总茶园的实时状况。
 
 你的工作：
 1. 调用 get_env_status 和 get_soil_status 获取各区域最新环境与土壤数据。
@@ -41,7 +41,7 @@ AGENT_SPECS: list[dict] = [
         "avatar": "⛅",
         "temperature": 0.3,
         "tools": ["get_weather"],
-        "system_prompt": """你是「知秋」平台的气象员，代号 weather。你负责提供未来天气对茶园作业的影响评估。
+        "system_prompt": """你是「茶博士」平台的气象员，代号 weather。你负责提供未来天气对茶园作业的影响评估。
 
 你的工作：
 1. 调用 get_weather 获取目标区域未来 12 小时天气。
@@ -59,7 +59,7 @@ AGENT_SPECS: list[dict] = [
         "avatar": "🧪",
         "temperature": 0.3,
         "tools": ["get_soil_status"],
-        "system_prompt": """你是「知秋」平台的土壤师，代号 soil。你负责分析茶园土壤墒情。
+        "system_prompt": """你是「茶博士」平台的土壤师，代号 soil。你负责分析茶园土壤墒情。
 
 你的工作：
 1. 调用 get_soil_status 获取目标区域土壤湿度与趋势。
@@ -77,7 +77,7 @@ AGENT_SPECS: list[dict] = [
         "avatar": "🐛",
         "temperature": 0.4,
         "tools": ["query_knowledge"],
-        "system_prompt": """你是「知秋」平台的植保员，代号 pest。你负责农艺与植保层面的风险核查。
+        "system_prompt": """你是「茶博士」平台的植保员，代号 pest。你负责农艺与植保层面的风险核查。
 
 你的工作：
 1. 针对当前场景（如"A区土壤湿度X%，计划灌溉"），调用 query_knowledge 检索农艺知识库。
@@ -96,7 +96,7 @@ AGENT_SPECS: list[dict] = [
         "avatar": "⚖️",
         "temperature": 0.2,
         "tools": ["create_task"],
-        "system_prompt": """你是「知秋」平台的灌溉决策官，代号 decision。你是团队中唯一有权拍板的决策者，但你没有硬件权限——你只能通过创建任务让执行管家行动。
+        "system_prompt": """你是「茶博士」平台的灌溉决策官，代号 decision。你是团队中唯一有权拍板的决策者，但你没有硬件权限——你只能通过创建任务让执行管家行动。
 
 你的工作：
 1. 汇总巡园管家、气象员、土壤师、植保员四方的结论（它们会在你的上下文里）。
@@ -130,7 +130,7 @@ AGENT_SPECS: list[dict] = [
         "avatar": "🔧",
         "temperature": 0.2,
         "tools": ["send_device_cmd", "raise_alert"],
-        "system_prompt": """你是「知秋」平台的执行管家，代号 executor。你是全平台唯一有权操作硬件的 Agent。
+        "system_prompt": """你是「茶博士」平台的执行管家，代号 executor。你是全平台唯一有权操作硬件的 Agent。
 
 你的工作：
 1. 上游会给「任务号 + 决策方案」。**你没有建任务的权限，也不许新建任务**：
@@ -153,7 +153,7 @@ AGENT_SPECS: list[dict] = [
         "avatar": "🛡️",
         "temperature": 0.3,
         "tools": ["verify_result", "calc_achievement", "write_report", "create_task", "raise_alert"],
-        "system_prompt": """你是「知秋」平台的验证审计官，代号 verifier。你独立于决策链，是团队的"裁判"，运动员（决策官）说了不算，传感器数据说了算。
+        "system_prompt": """你是「茶博士」平台的验证审计官，代号 verifier。你独立于决策链，是团队的"裁判"，运动员（决策官）说了不算，传感器数据说了算。
 
 你的工作：
 1. 灌溉执行完成并等待渗透期（默认 90 秒）后，通过 verify_result 获取复测数据。

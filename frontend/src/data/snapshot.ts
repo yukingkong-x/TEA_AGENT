@@ -89,12 +89,12 @@ export const metrics = [
 ] as const
 
 export const agents = [
-  { key: 'scout', name: '巡园管家', avatar: '🍃', job: '汇总读数，发出预警' },
-  { key: 'weather', name: '气象员', avatar: '☁️', job: '看未来 12 小时天气' },
-  { key: 'soil', name: '土壤师', avatar: '🌱', job: '给墒情评级' },
-  { key: 'pest', name: '植保员', avatar: '🐞', job: '对照知识库查风险' },
-  { key: 'decision', name: '灌溉决策官', avatar: '💧', job: '决定浇不浇' },
-  { key: 'executor', name: '执行管家', avatar: '🔧', job: '唯一可以下水泵' },
-  { key: 'verifier', name: '验证审计官', avatar: '📋', job: '用复测计算达成率' },
+  { key: 'scout', name: '巡园管家', avatar: '🍃', img: '/avatars/scout.png', job: '汇总读数，发出预警' },
+  { key: 'weather', name: '气象员', avatar: '☁️', img: '/avatars/weather.png', job: '看未来 12 小时天气' },
+  { key: 'soil', name: '土壤师', avatar: '🌱', img: '/avatars/soil.png', job: '给墒情评级' },
+  { key: 'pest', name: '植保员', avatar: '🐞', img: '/avatars/pest.png', job: '对照知识库查风险' },
+  { key: 'decision', name: '灌溉决策官', avatar: '💧', img: '/avatars/decision.png', job: '决定浇不浇' },
+  { key: 'executor', name: '执行管家', avatar: '🔧', img: '/avatars/executor.png', job: '唯一可以下水泵' },
+  { key: 'verifier', name: '验证审计官', avatar: '📋', img: '/avatars/verifier.png', job: '用复测计算达成率' },
 ]
 

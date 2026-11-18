@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { endpoints } from '../api/endpoints'
 import { dashboardSocket } from '../api/socket'
 import type { AlertDto } from '../api/types'
+import { tsMillis } from '../lib/parseTs'
 
 const LEVEL_WEIGHT: Record<string, number> = { critical: 3, warning: 2, info: 1 }
 
@@ -70,7 +71,12 @@ export function useAlerts() {
     () =>
       rows
         .filter((item) => !item.acknowledged)
-        .sort((a, b) => (LEVEL_WEIGHT[b.level] ?? 0) - (LEVEL_WEIGHT[a.level] ?? 0)),
+        // 严重度优先，同级取最新：首条要放"最该被人看见"的那条
+        .sort(
+          (a, b) =>
+            (LEVEL_WEIGHT[b.level] ?? 0) - (LEVEL_WEIGHT[a.level] ?? 0) ||
+            (tsMillis(b.at) ?? 0) - (tsMillis(a.at) ?? 0),
+        ),
     [rows],
   )
 
@@ -84,5 +90,16 @@ export function useAlerts() {
     }
   }, [])
 
-  return { rows, pending, source, reload: load, ack }
+  const ackAll = useCallback(async () => {
+    const snapshot = rows
+    setRows((current) => current.map((item) => (item.acknowledged ? item : { ...item, acknowledged: true })))
+    try {
+      await endpoints.ackAllAlerts()
+    } catch {
+      // 整批回滚：宁可让告警继续挂着，也不能显示"已清除"而后端其实没清
+      setRows(snapshot)
+    }
+  }, [rows])
+
+  return { rows, pending, source, reload: load, ack, ackAll }
 }

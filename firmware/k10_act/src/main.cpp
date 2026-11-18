@@ -2,7 +2,6 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
-#include <DFRobot_GDL.h>
 #include <time.h>
 #include "../include/config.h"
 
@@ -12,18 +11,9 @@ const char* status_topic    = "tea/device/k10-act-03/status";
 const char* cmd_topic       = "tea/device/k10-act-03/cmd";
 const char* ack_topic       = "tea/device/k10-act-03/ack";
 
-// ===== 屏幕配置（K10 板载 ST7789）=====
-#define TFT_DC  13
-#define TFT_CS  7
-#define TFT_RST 14
-#define TFT_BL  21
-// DFRobot_GDL 未提供灰色，手动定义 RGB565 灰色（离线状态点用）
-#ifndef COLOR_RGB565_GREY
-#define COLOR_RGB565_GREY 0x8410
-#endif
-DFRobot_ST7789_240x320_HW_SPI screen(TFT_DC, TFT_CS, TFT_RST);
+// 该板无屏幕，已移除所有显示代码；状态通过串口 + MQTT status 上报。
 
-const int  relay_pin    = 1;      // GPIO1，低电平触发（PRD 4.2）
+const int  relay_pin    = 15;     // IO15，低电平触发（旧项目验证过；GPIO1 在定制K10上会抖动）
 const long MAX_PUMP_S   = 120;    // 安全阀：单次最大 120s（PRD 4.3）
 
 bool          is_pumping    = false;
@@ -59,8 +49,9 @@ long get_epoch() {
 void send_ack(const char* ref_msg_id, const char* task_id,
               const char* stage, const char* result,
               long executed_s = -1, bool clamped = false) {
+    static unsigned long ack_seq = 0;
     StaticJsonDocument<512> doc;
-    doc["msg_id"]     = String("ack-") + String(millis());
+    doc["msg_id"]     = String("ack-") + String(millis()) + String("-") + String(++ack_seq);
     doc["ref_msg_id"] = ref_msg_id;
     doc["task_id"]    = task_id;
     doc["device_id"]  = device_id;
@@ -74,36 +65,8 @@ void send_ack(const char* ref_msg_id, const char* task_id,
     doc["ts"] = get_epoch();
 
     char buffer[512];
-    serializeJson(doc, buffer);
-    client.publish(ack_topic, buffer);
-}
-
-void update_display(const char* state, long remaining = -1) {
-    screen.fillScreen(COLOR_RGB565_BLACK);
-    screen.setTextSize(2);
-    screen.setTextColor(COLOR_RGB565_BLUE);
-    screen.setCursor(10, 10);
-    screen.println("TEA AGENT - ACTUATOR");
-
-    screen.setTextSize(1);
-    // 在线状态点：绿=在线，灰=离线
-    screen.fillCircle(230, 14, 5, client.connected() ? COLOR_RGB565_GREEN : COLOR_RGB565_GREY);
-    screen.setTextColor(COLOR_RGB565_WHITE);
-    screen.setCursor(10, 40);
-    screen.printf("ID: %s", device_id);
-    screen.setCursor(10, 60);
-    screen.printf("IP: %s", WiFi.localIP().toString().c_str());
-
-    screen.setTextSize(2);
-    screen.setCursor(10, 120);
-    screen.printf("STATE: %s", state);
-
-    if (is_pumping && remaining >= 0) {
-        // PRD 4.3：屏幕显示"浇水中 剩余Ns"
-        screen.setTextColor(COLOR_RGB565_ORANGE);
-        screen.setCursor(10, 160);
-        screen.printf("REMAINING: %ld s", remaining);
-    }
+    size_t len = serializeJson(doc, buffer);
+    client.publish(ack_topic, buffer, len);   // 必须指定长度，否则尾部带随机字节变乱码
 }
 
 void setup_wifi() {
@@ -157,7 +120,6 @@ void callback(char* topic, byte* payload, unsigned int length) {
         is_pumping      = true;
 
         digitalWrite(relay_pin, LOW);  // 低电平触发：闭合
-        update_display("PUMPING", duration);
         Serial.printf("[Pump] started, %ld s (clamped=%d)\n", duration, pump_clamped);
 
     } else if (strcmp(action, "relay_off") == 0) {
@@ -166,7 +128,6 @@ void callback(char* topic, byte* payload, unsigned int length) {
         digitalWrite(relay_pin, HIGH);
         is_pumping = false;
         send_ack(msg_id, task_id, "finished", "done");
-        update_display("STANDBY");
         Serial.println("[Pump] emergency OFF");
 
     } else if (strcmp(action, "reboot") == 0) {
@@ -192,7 +153,7 @@ void ensure_connection() {
         backoff_ms = 1000;
         client.publish(status_topic, "{\"online\": true}");
         client.subscribe(cmd_topic);
-        update_display(is_pumping ? "PUMPING" : "STANDBY");
+        Serial.printf("[MQTT] subscribed %s\n", cmd_topic);
     } else {
         backoff_ms = (backoff_ms >= 30000) ? 30000 : backoff_ms * 2;
     }
@@ -200,14 +161,7 @@ void ensure_connection() {
 
 void setup() {
     Serial.begin(115200);
-
-    screen.begin();
-    pinMode(TFT_BL, OUTPUT);
-    digitalWrite(TFT_BL, HIGH);
-    screen.fillScreen(COLOR_RGB565_BLACK);
-    screen.setTextSize(2);
-    screen.setCursor(10, 10);
-    screen.println("Initializing...");
+    Serial.println("\n=== k10_act (no-screen) boot ===");
 
     pinMode(relay_pin, OUTPUT);
     digitalWrite(relay_pin, HIGH);  // 上电即断开（低电平触发，高=断）
@@ -215,9 +169,8 @@ void setup() {
     setup_wifi();
     setup_time();
     client.setServer(mqtt_server, mqtt_port);
+    client.setBufferSize(768);   // 默认256会丢弃带detail的finished ack
     client.setCallback(callback);
-
-    update_display("STANDBY");
 }
 
 void loop() {
@@ -232,14 +185,13 @@ void loop() {
             long executed_s = (long)((millis() - pump_start_ms) / 1000);
             send_ack(current_msg_id.c_str(), current_task_id.c_str(),
                      "finished", "done", executed_s, pump_clamped);
-            update_display("STANDBY");
             Serial.printf("[Pump] finished, executed %ld s\n", executed_s);
         } else {
             static unsigned long last_display_update = 0;
             if (millis() - last_display_update > 1000) {
                 last_display_update = millis();
                 long remaining = (long)((pump_end_ms - millis()) / 1000);
-                update_display("PUMPING", remaining);
+                Serial.printf("[Pump] remaining %ld s\n", remaining);
             }
         }
     }
@@ -253,7 +205,7 @@ void loop() {
         doc["pumping"] = is_pumping;
 
         char buffer[160];
-        serializeJson(doc, buffer);
-        client.publish(status_topic, buffer);
+        size_t len = serializeJson(doc, buffer);
+        client.publish(status_topic, buffer, len);
     }
 }

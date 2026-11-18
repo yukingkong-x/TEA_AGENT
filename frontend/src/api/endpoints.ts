@@ -13,12 +13,14 @@ import type {
   MockStateDto,
   PageDto,
   SensorHistoryDto,
+  SensorDayDto,
   SensorLatestDto,
   SettingsDto,
   RunDetailDto,
   RunRoundsDto,
   NodeRecordDto,
   NodeSummaryDto,
+  QaAnswerDto,
   TaskDto,
   TaskEventDto,
   VerificationRecordDto,
@@ -31,6 +33,7 @@ const apiPath = {
   devices: '/devices',
   sensorLatest: '/sensor/latest',
   sensorHistory: '/sensor/history',
+  sensorDay: '/sensor/day',
   tasks: '/tasks',
   alerts: '/alerts',
   agents: '/agents',
@@ -44,6 +47,7 @@ const apiPath = {
   knowledge: '/knowledge',
   knowledgeUpload: '/knowledge/upload',
   knowledgeSearch: '/knowledge/search',
+  qaAsk: '/qa/ask',
 }
 
 export const endpoints = {
@@ -64,6 +68,10 @@ export const endpoints = {
       limit,
     }),
 
+  /** 近 N 小时全指标 10 分钟桶摘要（一条请求顶七条 history，日高日低/DLI/变压全靠它） */
+  sensorDay: (deviceId: string, hours = 24) =>
+    api.get<SensorDayDto>(apiPath.sensorDay, { device_id: deviceId, hours }),
+
   tasks: (params: { status?: string; type?: string; page?: number; page_size?: number } = {}) =>
     api.get<PageDto<TaskDto>>(apiPath.tasks, params),
 
@@ -80,6 +88,9 @@ export const endpoints = {
     api.get<PageDto<AlertDto>>(apiPath.alerts, params),
 
   ackAlert: (id: number) => api.post<AlertDto>(`${apiPath.alerts}/${id}/ack`),
+
+  /** 大屏「一键清除」：把全部未确认报警置为已确认（只 ack 不删） */
+  ackAllAlerts: () => api.post<{ updated: number }>(`${apiPath.alerts}/ack-all`),
 
   agents: () => api.get<AgentDto[]>(apiPath.agents),
 
@@ -196,6 +207,14 @@ export const endpoints = {
   /** 返回 `{question, top_k, hits}`；hits 为空数组 = 未检索到，是正常结果 */
   searchKnowledge: (question: string, topK = 3) =>
     api.post<KnowledgeSearchDto>(apiPath.knowledgeSearch, { question, top_k: topK }, undefined, 20_000),
+
+  /**
+   * 自由提问（检索增强 + 带引用）。
+   * 超时给 30 秒：实测 glm-4-flash 单次要 4-7 秒，默认 8 秒会误报「连不上后端」。
+   * 注意 degraded=true 是正常返回，不是异常——页面要照常渲染 citations。
+   */
+  askQa: (question: string, topK = 3) =>
+    api.post<QaAnswerDto>(apiPath.qaAsk, { question, top_k: topK }, undefined, 30_000),
 }
 
 /** 后端 `_parse_dt` 认 `%Y-%m-%d %H:%M:%S` 也认带 T 的；这里给本地时区、不带 Z */
