@@ -52,7 +52,7 @@
 ├── backend/app/    FastAPI 后端
 │   ├── core/  api/  models/  devices/  mock/                  ← 队友B
 │   └── agents/  workflow/  orchestrator/  verification/  knowledge/   ← 队长
-├── firmware/       k10_field / esp32_soil / k10_act 三个工程   ← 队友C
+├── firmware/       k10_act 执行终端固件 + tools/ USB-RS485 串口桥   ← 队友C
 ├── deploy/         compose 配套配置                            ← 队友B
 ├── docs/           contracts（契约变更）/ meeting（站会）/ material（资料）/ hardware_log.md（实测）
 ├── TEAM.md         协作手册——新人必读
@@ -62,6 +62,8 @@
 
 ## 5. 快速开始
 
+### 5.1 平台（软件侧）
+
 ```bash
 # 1. 配置：复制 .env.example 为 .env，填 MySQL/Redis/MQTT 密码和 LLM key
 # 2. 一键启动六个服务（前端 / 后端 / MySQL / Redis / Mosquitto / Chroma）
@@ -70,6 +72,19 @@ docker compose up -d
 #    前端大屏  http://localhost:5173
 #    后端接口  http://localhost:8000/docs
 ```
+
+### 5.2 硬件（真实设备接入）
+
+实际架构：**传感器走电脑 USB-RS485 桥接上报，K10 行空板专职执行（继电器）**，两者经 MQTT 联动。
+
+1. **接线**
+   - 气象传感器、土壤传感器 RS485 A/B 线并联 → USB-RS485 转换器 → 电脑（12V 电源适配器给传感器供电）；
+   - 电脑 USB 连接 K10 行空板；K10 IO15（低电平触发）→ 继电器。
+2. **烧录执行终端固件**：PlatformIO 打开 `firmware/k10_act`，复制 `config.h.example` 为 `config.h` 填 WiFi 与 MQTT 地址，Upload 到 K10。
+3. **启动传感器桥接**：双击 `firmware/tools/启动桥接.bat`（黑窗口每 10 秒滚动一行读数，保持开着）。
+4. **验证**：前端大屏右上角出现 `REAL · 已连接`，地块 3 个设备点变绿、数值实时变化；下发浇水后继电器吸合、复测湿度上升。
+
+> 排障与接线速查（A/B 对调、CH340 僵死、继电器掉线恢复）→ [firmware/README.md](firmware/README.md)；踩坑全过程 → [docs/hardware_log.md](docs/hardware_log.md)。
 
 各模块的开发手册（动手前先看自己那本）：
 

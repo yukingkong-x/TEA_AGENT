@@ -42,7 +42,7 @@
 必须用 `app.mount("/", ...)`（根挂载）；`mount("/mcp")` 会叠成 `/mcp/mcp/*`，
 `include_router` 也挂不了（返回的是完整 FastAPI 应用）——队长 docstring 里那行已过时。
 
-**已知待补**：`/mcp/messages` 目前无鉴权（比赛演示可接受，公网部署前需加 token）。
+**已知待补**：`/mcp/messages` 目前无鉴权（本地演示可接受，公网部署前需加 token）。
 
 ### 基座需要队长提供的（**只认 `app/seams.py` 这一个文件**）
 
