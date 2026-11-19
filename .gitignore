@@ -253,3 +253,8 @@ output/
 
 # 构建缓存
 *.tsbuildinfo
+
+# 交付物（方案书/截图素材）仅本地保留，不入库
+/docs/方案书_*
+/docs/茶园多智能体平台方案书.pdf
+/docs/proposal_assets/
